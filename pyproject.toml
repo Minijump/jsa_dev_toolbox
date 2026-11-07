@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=77"]  # 77: license given as "MIT"
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jsa-dev-toolbox"
+version = "0.22.0"
+description = "CLI toolbox for Odoo developers: restore/sanitize databases, codebase structure and coverage reports"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "typer>=0.16",  # older versions break with click >= 8.2
+    "tomli>=2; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+jsa = "jsa.cli:main"
+
+[tool.setuptools]
+packages = ["jsa", "jsa.core", "jsa.db", "jsa.structure", "jsa.uitests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

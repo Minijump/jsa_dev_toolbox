@@ -1,0 +1,38 @@
+"""Example of private keywords written in Python, for what the existing keywords cannot do.
+
+Copy this file to a name ending with .py (here, in this folder that git ignores, or in a folder listed in
+[uitests] keywords_dirs of config.toml) and adapt it. Every function marked @keyword is then usable in every test,
+under the name of the function: field_should_not_be_empty -> "Field Should Not Be Empty".
+
+`odoo` is the toolkit of the basic keywords (jsa/uitests/keywords/odoo_toolkit.py): run a keyword, wait for Odoo,
+find a field from its label, fail with a picture of the screen...
+"""
+from robot.api.deco import keyword
+
+from odoo_toolkit import odoo
+
+ROBOT_AUTO_KEYWORDS = False  # only the functions marked @keyword are keywords
+
+
+@keyword
+def confirm_quotation_for(customer, product, quantity=1):
+    """Create a quotation for ``customer`` with one product, and confirm it.
+
+    Example: ``Confirm Quotation For    Gemini Furniture    Office Chair    2``
+    """
+    odoo.run("Open Menu", "Sales / Orders / Quotations")
+    odoo.run("Create Record")
+    odoo.run("Set Field", "Customer", customer)
+    odoo.run("Add Line", f"Product={product}", f"Quantity={quantity}")
+    odoo.run("Click Button", "Confirm")
+    odoo.run("Status Should Be", "Sales Order")
+
+
+@keyword
+def field_should_not_be_empty(label):
+    """Check that a field of the form has a value.
+
+    Example: ``Field Should Not Be Empty    Customer``
+    """
+    if not odoo.field(label)["value"]:
+        odoo.fail(f'The field "{label}" is empty')

@@ -1,0 +1,4 @@
+# Copy this file to documents.toml (in this folder) and adapt it: one line per header or footer of the quotations,
+# its id in Odoo = a PDF file put in this folder. The ids: jsa quote-pdfs <db> -p <profile> --list
+12 = "cover.pdf"
+13 = "general_terms.pdf"

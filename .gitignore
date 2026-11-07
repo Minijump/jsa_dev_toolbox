@@ -1,0 +1,22 @@
+# yours: configuration, dumps, private commands and private ui test keywords
+config.toml
+dumps/*
+!dumps/README.md
+plugins/*
+!plugins/*.sample
+# the example plugin: its code is part of the toolbox, its files (documents.toml, PDFs) are yours
+!plugins/quote_pdfs/
+plugins/quote_pdfs/*
+!plugins/quote_pdfs/__init__.py
+!plugins/quote_pdfs/*.sample
+uitests/*
+!uitests/*.sample
+
+# generated
+codebase_analysis/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+build/
+
+CLAUDE.md

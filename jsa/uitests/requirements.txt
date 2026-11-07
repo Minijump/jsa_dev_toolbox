@@ -1,0 +1,5 @@
+# What 'jsa uitests setup' installs in uitests/.env (never in jsa's own environment).
+# The "batteries" package bundles Node.js, so nothing else has to be installed on the machine.
+robotframework==7.5
+robotframework-browser==20.6.0
+robotframework-browser-batteries==20.6.0

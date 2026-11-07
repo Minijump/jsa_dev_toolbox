@@ -1,0 +1,17 @@
+*** Comments ***
+Example of private keywords made of other keywords: no programming needed.
+Copy this file to a name ending with .resource (here, in this folder that git ignores, or in a folder listed in
+[uitests] keywords_dirs of config.toml) and adapt it. Its keywords are then usable in every test, and listed by
+'jsa uitests keywords'.
+
+*** Keywords ***
+Create Contact
+    [Documentation]    Create a contact with its email, and save it.
+    ...
+    ...    Example: ``Create Contact    Jane Doe    jane@example.com``
+    [Arguments]    ${name}    ${email}
+    Open Menu    Contacts
+    Create Record
+    Set Field    name    ${name}
+    Set Field    Email    ${email}
+    Save Record

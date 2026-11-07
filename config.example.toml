@@ -1,0 +1,78 @@
+# Copy this file to config.toml (gitignored) and adapt it to your machine.
+
+# Extra folders containing private plugins (*.py with a register(app) function), besides ./plugins/
+# plugins_dirs = ["~/projects/my_private_jsa_plugins"]
+
+[codebase]
+# Folders containing your custom addons: scanned by 'jsa structure', compared by 'jsa pending-upgrades'
+addons_roots = [
+    "~/projects/my_company_addons",
+    "~/projects/OCA",
+]
+
+# What 'jsa restore' does to the restored database, in this order and in one transaction.
+# - requires: the step is skipped when this table ("table" or "table.column") does not exist (module not installed)
+# - odoo_versions = [19]: the step is skipped on the databases of the other versions of Odoo
+# - enabled = false: keeps a step here without running it
+# Add your own steps (SSO, mail servers, ...) the same way.
+# A step can also be a jsa command instead of SQL, e.g. one of your plugins: it is called with the database name
+# at its end, after the SQL steps. If it fails, the next steps still run and the restore tells it.
+#   [[restore.extra_steps]]
+#   label = "Cover and footer set"
+#   command = "set-cover-footer --company 1"   # runs: jsa set-cover-footer --company 1 <database>
+[[restore.extra_steps]]
+label = "Mandatory 2FA policy removed"
+sql = "DELETE FROM ir_config_parameter WHERE key = 'auth_totp.policy';"
+
+[[restore.extra_steps]]
+label = "2FA disabled for all users"
+sql = "UPDATE res_users SET totp_secret = '';"
+requires = ["res_users.totp_secret"]
+
+[[restore.extra_steps]]
+label = "Admin login set to 'admin'"
+# the first statement frees the login 'admin' if another user has it (logins are unique)
+sql = "UPDATE res_users SET login = login || '_' || id WHERE login = 'admin' AND id != 2; UPDATE res_users SET login = 'admin' WHERE id = 2;"
+
+[[restore.extra_steps]]
+label = "All passwords set to 'admin'"
+# hash of the password 'admin'
+sql = "UPDATE res_users SET password = '$pbkdf2-sha512$25000$lbIWYizF.L93zlkLQcg5hw$mbZkIsPQHp2NXmssL8CRY0o2dQPQLENa1pRZ0xbminsVXz3N5Wy.1GiVXJghx7LTr.vfXQVoT8J8/hK4g.NZXg';"
+
+[[restore.extra_steps]]
+label = "Expiration date set to 2135-12-31"
+sql = "INSERT INTO ir_config_parameter (key, value) VALUES ('database.expiration_date', '2135-12-31') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;"
+
+[[restore.extra_steps]]
+label = "Outgoing mail servers disabled"
+sql = "UPDATE ir_mail_server SET active = false;"
+requires = ["ir_mail_server"]
+enabled = false
+
+# One profile per Odoo installation, selected with --profile/-p (e.g. "jsa structure -c -p 17")
+[profiles.17]
+python = "~/.virtualenvs/odoo_17/bin/python"  # venv running Odoo (needs 'coverage' installed for -c)
+odoo_root = "~/projects/odoo"
+odoo_bin = "~/projects/odoo/odoo-bin"
+enterprise = "~/projects/enterprise"  # optional; its addons are the "enterprise modules" flagged by 'jsa structure'
+addons_paths = [
+    "~/projects/my_company_addons",
+    "~/projects/OCA",
+    "~/projects/odoo/addons",
+    "~/projects/enterprise",
+]
+db_prefix = "cov17"  # prefix of the temporary databases created by coverage runs
+
+# ui tests ('jsa uitests run', once set up with 'jsa uitests setup')
+[uitests]
+url = "http://localhost:8069"  # a running Odoo; or let jsa start one with: jsa uitests run -p <profile> --db <db>
+# What 'jsa uitests run -p <profile> --new-db' installs in the database it makes for the tests
+# (default: every custom addon of [codebase] addons_roots, with demo data)
+# modules = ["sale_management", "my_addon"]
+# demo = false
+# db = "my_test_db"            # needed when that Odoo serves several databases
+password = "admin"             # password of every user of the tested database (what 'jsa restore' sets)
+# Your own tests and keywords, e.g. in a private repository (default: your tests in uitests/tests/ and your
+# keyword files in uitests/, a folder ignored by git; the example tests of jsa/uitests/examples if you have none)
+# tests = "~/projects/my_private_ui_tests/tests"
+# keywords_dirs = ["~/projects/my_private_ui_tests/keywords"]
