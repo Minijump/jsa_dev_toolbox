@@ -1,11 +1,13 @@
-"""Load a plain SQL dump (pg_dump format) into a database: extensions first, then the dump streamed into psql
-with a progress display."""
+"""Load a plain SQL dump (pg_dump format) into a database: the PostgreSQL versions checked, extensions first, then
+the dump streamed into psql with a progress display."""
+import itertools
 import re
 import subprocess
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable, Iterator, Optional
 
 import typer
 
@@ -15,19 +17,91 @@ from ..core.ui import StatusLine
 EXTENSION_RE = re.compile(rb'^CREATE EXTENSION (?:IF NOT EXISTS )?"?([\w-]+)"?')
 COPY_RE = re.compile(rb'^COPY (?:public\.)?"?([\w.]+)"? ')
 INDEX_PREFIXES = (b"CREATE INDEX ", b"CREATE UNIQUE INDEX ")
+DUMPED_FROM_RE = re.compile(rb'^-- Dumped from database version (.+)')
+DUMPED_BY_RE = re.compile(rb'^-- Dumped by pg_dump version (.+)')
+NUMBERS_RE = re.compile(r'\d+(?:\.\d+)*')
+
+Version = tuple[int, ...]
+
+
+def header_lines(lines: Iterable[bytes]) -> Iterator[bytes]:
+    """The lines pg_dump writes before the first table: versions, settings, extensions, types, functions."""
+    for line in lines:
+        if line.startswith((b"CREATE TABLE ", b"COPY ")):
+            return
+        yield line
+
+
+def extensions_in(lines: Iterable[bytes]) -> list[str]:
+    return [m.group(1).decode() for m in map(EXTENSION_RE.match, header_lines(lines)) if m]
 
 
 def dump_extensions(dump_file: Path) -> list[str]:
     """Extensions created by the dump. pg_dump writes them before the first table, so only the header is read."""
-    extensions = []
     with open(dump_file, 'rb') as f:
-        for line in f:
-            if line.startswith((b"CREATE TABLE ", b"COPY ")):
-                break
-            m = EXTENSION_RE.match(line)
-            if m:
-                extensions.append(m.group(1).decode())
-    return extensions
+        return extensions_in(f)
+
+
+# ---------- PostgreSQL versions: an older PostgreSQL can refuse what a newer one wrote ----------
+
+def parse_version(text: str) -> Optional[Version]:
+    """(18, 7) from '18.7 (Ubuntu 18.7-1.pgdg24.04+1)' or 'psql (PostgreSQL) 18.7'."""
+    m = NUMBERS_RE.search(text)
+    return tuple(int(n) for n in m.group().split('.')) if m else None
+
+
+def show(version: Version) -> str:
+    return '.'.join(map(str, version))
+
+
+def dump_versions(lines: Iterable[bytes]) -> tuple[Optional[Version], Optional[Version]]:
+    """(version of the PostgreSQL that was dumped, version of the pg_dump that wrote the dump), from its first lines."""
+    source = writer = None
+    for line in itertools.islice(lines, 50):
+        if m := DUMPED_FROM_RE.match(line):
+            source = parse_version(m.group(1).decode(errors="replace"))
+        elif m := DUMPED_BY_RE.match(line):
+            writer = parse_version(m.group(1).decode(errors="replace"))
+    return source, writer
+
+
+def local_versions() -> tuple[Optional[Version], Optional[Version]]:
+    """(version of the PostgreSQL server, version of psql); None when unknown (the restore itself says why)."""
+    def output(*cmd: str) -> str:
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return res.stdout if res.returncode == 0 else ""
+    return (parse_version(output("psql", "-X", "-tA", "-d", "postgres", "-c", "SHOW server_version;")),
+            parse_version(output("psql", "--version")))
+
+
+def version_problem(dump: tuple, local: tuple, extensions: Iterable[str] = ()) -> Optional[list[str]]:
+    """Why this PostgreSQL may refuse the dump (older than the server it comes from, or psql older than the pg_dump
+    that wrote it), then how to fix it. None when fine or unknown.
+    E.g. PostgreSQL 18.7 writes a column option (pg_attver) that older 18.x servers refuse."""
+    (source, writer), (server, client) = dump, local
+    facts, upgrade, install = [], [], []
+    if source and server and server < source:
+        facts.append(f"the dump comes from PostgreSQL {show(source)} and your server is {show(server)}")
+        if server[0] == source[0]:
+            upgrade += [f"postgresql-{server[0]}"] + ([f"postgresql-{server[0]}-pgvector"] if "vector" in extensions else [])
+        else:
+            install.append(f"PostgreSQL {source[0]}")
+    if writer and client and client < writer:
+        facts.append(f"{'it' if facts else 'the dump'} was written by pg_dump {show(writer)} and your psql is {show(client)}")
+        if client[0] == writer[0]:
+            upgrade.append(f"postgresql-client-{client[0]}")
+        else:
+            install.append(f"postgresql-client-{writer[0]}")
+    if not facts:
+        return None
+    fixes = ([f"sudo apt update && sudo apt install --only-upgrade {' '.join(upgrade)}"] if upgrade else []) + \
+            ([f"install {' and '.join(install)} (a newer major version)"] if install else [])
+    sentence = "; ".join(facts)
+    return [f"{sentence[0].upper()}{sentence[1:]}: an older PostgreSQL can refuse what a newer one wrote.",
+            f"To update it: {', then '.join(fixes)}"]
 
 
 def create_privileged_extensions(db_name: str, extensions: list[str], postgres_user: str):

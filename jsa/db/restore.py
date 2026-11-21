@@ -1,4 +1,5 @@
 """Restore an Odoo backup zip (dump.sql + optional filestore) into a local database, then sanitize it."""
+import itertools
 import shutil
 import subprocess
 import tempfile
@@ -67,6 +68,20 @@ def extract_dump(zip_path: Path, output_dir: Path) -> tuple[Path, Optional[Path]
     return output_dir / DUMP_FILE, (filestore_dir if filestore_dir.is_dir() else None)
 
 
+def version_problem(zip_path: Path, local: Optional[tuple] = None) -> Optional[list[str]]:
+    """Why the local PostgreSQL may refuse the dump of this zip, read from the dump's first lines (no extraction),
+    with the fix (see restore_sql.version_problem). None when fine, unknown or the zip is unreadable."""
+    try:
+        with zipfile.ZipFile(zip_path) as zip_ref, zip_ref.open(DUMP_FILE) as f:
+            header = list(itertools.islice(restore_sql.header_lines(f), 10000))
+    except (KeyError, zipfile.BadZipFile, OSError):  # no dump.sql or not a zip: extract_dump says so
+        return None
+    dumped = restore_sql.dump_versions(header)
+    if dumped == (None, None):  # not written by pg_dump: nothing to compare
+        return None
+    return restore_sql.version_problem(dumped, local or restore_sql.local_versions(), restore_sql.extensions_in(header))
+
+
 def split_sql_errors(stderr: str) -> tuple[list[str], int]:
     """Return (real error lines, number of ignored harmless errors) from psql's stderr."""
     errors = [line for line in stderr.splitlines() if "ERROR:" in line]
@@ -74,7 +89,9 @@ def split_sql_errors(stderr: str) -> tuple[list[str], int]:
     return real, len(errors) - len(real)
 
 
-def restore_db(db_name: str, dump_file: Path, postgres_user: str, ignore_sql_errors: bool = False):
+def restore_db(db_name: str, dump_file: Path, postgres_user: str, ignore_sql_errors: bool = False,
+               version_problem: Optional[list[str]] = None):
+    """version_problem: why this PostgreSQL may refuse the dump (restored anyway), shown if SQL errors happen."""
     typer.echo("🧨 Dropping existing database (if exists)...")
     pg.dropdb(db_name)
 
@@ -95,6 +112,9 @@ def restore_db(db_name: str, dump_file: Path, postgres_user: str, ignore_sql_err
             typer.echo(f"   {line}")
         if len(real_errors) > 20:
             typer.echo(f"   ... and {len(real_errors) - 20} more")
+        if version_problem:
+            typer.echo(f"💡 Probably because {version_problem[0][0].lower()}{version_problem[0][1:]}")
+            typer.echo(f"   {version_problem[1]}, then restore again.")
         if not ignore_sql_errors:
             typer.echo(f"❌ Database '{db_name}' is incomplete and was NOT sanitized. "
                        "Use --ignore-sql-errors to sanitize it anyway.")
@@ -134,6 +154,7 @@ def restore(
     data_dir: Path = typer.Option(config.DEFAULT_DATA_DIR, "--data-dir", help="Odoo data_dir; the filestore (if any) is restored in <data_dir>/filestore/<db_name>"),
     ignore_sql_errors: bool = typer.Option(False, "--ignore-sql-errors", help="Sanitize the database even if the SQL restore reported errors"),
     save_snapshot: bool = typer.Option(True, "--snapshot/--no-snapshot", help="Save the restored database as its snapshot, replacing the previous one (see 'jsa reset')"),
+    ignore_pg_version: bool = typer.Option(False, "--ignore-pg-version", help="Restore even if the dump comes from a newer PostgreSQL than yours (it may end with SQL errors)"),
 ):
     """Restore and sanitize Odoo DB from a backup zip."""
     conf = config.load_config(required=neutralize_db)
@@ -152,9 +173,17 @@ def restore(
             raise typer.Exit(code=1)
 
     zip_path = get_zip_path(zip_name, config.DUMPS_DIR)
+    problem = version_problem(zip_path)  # before anything is extracted or dropped
+    if problem and not ignore_pg_version:
+        typer.echo(f"❌ {problem[0]}")
+        typer.echo(f"   {problem[1]}")
+        typer.echo("   Nothing was changed. --ignore-pg-version restores anyway (it may end with SQL errors).")
+        raise typer.Exit(code=1)
+    if problem:
+        typer.echo(f"⚠️ {problem[0]} Restoring anyway (--ignore-pg-version).")
     with tempfile.TemporaryDirectory(prefix="odoo_restore_") as tmp_dir:
         dump_file, filestore_dir = extract_dump(zip_path, Path(tmp_dir))
-        restore_db(db_name, dump_file, postgres_user, ignore_sql_errors)
+        restore_db(db_name, dump_file, postgres_user, ignore_sql_errors, problem)
         restore_filestore(db_name, filestore_dir, data_dir)
 
     if neutralize_db:

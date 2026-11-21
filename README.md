@@ -22,7 +22,7 @@ are already there: 2FA off, every password `admin`, ...). Put your dumps in `dum
 | Command | What it does | Options |
 |---|---|---|
 | **Databases** | | |
-| `jsa restore <db> [zip]` | restores a backup zip of `dumps/` with its filestore, runs the restore steps, saves a snapshot, lists the addons to update | `--neutralize -p <profile>`: run `odoo-bin neutralize` (odoo.sh dumps already are)<br>`--ignore-sql-errors`: go on when the SQL restore reported errors<br>`--no-snapshot`: keep the previous snapshot<br>`--postgres-user`: system user for the superuser-only extensions (default `postgres`) |
+| `jsa restore <db> [zip]` | restores a backup zip of `dumps/` with its filestore, runs the restore steps, saves a snapshot, lists the addons to update | `--neutralize -p <profile>`: run `odoo-bin neutralize` (odoo.sh dumps already are)<br>`--ignore-sql-errors`: go on when the SQL restore reported errors<br>`--ignore-pg-version`: restore a dump from a newer PostgreSQL than yours<br>`--no-snapshot`: keep the previous snapshot<br>`--postgres-user`: system user for the superuser-only extensions (default `postgres`) |
 | `jsa snapshot <db>` | saves a copy of the database and its filestore | |
 | `jsa reset <db>` | puts the database back to its snapshot, in seconds | |
 | `jsa clone <db> <new>` | copies a database and its filestore into a new one | `--no-snapshot`: do not save the copy as its snapshot |

@@ -9,6 +9,7 @@ import typer
 from . import self_update
 from .core import config, pg, plugins
 from .core.addons import find_addons
+from .db import restore, restore_sql
 from .uitests import commands as uitests
 
 OK, WARN, FAIL = "✅", "⚠️", "❌"
@@ -129,6 +130,11 @@ def check_config() -> Iterator[Check]:
 def check_dumps() -> Iterator[Check]:
     zips = sorted(config.DUMPS_DIR.glob("*.zip")) if config.DUMPS_DIR.is_dir() else []
     yield OK, "🗜️", f"{len(zips)} dump(s) in {config.DUMPS_DIR}" + (f": {', '.join(z.name for z in zips[:5])}" if zips else "")
+    local = restore_sql.local_versions() if zips else None
+    for zip_path in zips:  # only the first lines of each dump are read
+        problem = restore.version_problem(zip_path, local)
+        if problem:
+            yield WARN, "🐘", f"{zip_path.name}: {problem[0]} {problem[1]} ('jsa restore' refuses it until then)"
 
 
 def check_uitests() -> Iterator[Check]:

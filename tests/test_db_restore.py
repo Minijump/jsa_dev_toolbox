@@ -95,7 +95,7 @@ def _restore_without_postgres(monkeypatch, tmp_path, save_snapshot):
     monkeypatch.setattr(restore, "restore_filestore", lambda *args: None)
     monkeypatch.setattr(restore_steps, "run_steps", lambda *args, **kwargs: steps_done.append(1) or [])
     monkeypatch.setattr(restore.databases, "save_snapshot", lambda db, data_dir: saved.append((db, data_dir, len(steps_done))))
-    restore.restore(None, "mydb", None, "postgres", False, None, tmp_path, False, save_snapshot)
+    restore.restore(None, "mydb", None, "postgres", False, None, tmp_path, False, save_snapshot, False)
     return saved
 
 
@@ -113,8 +113,117 @@ def test_a_snapshot_that_fails_does_not_lose_the_restore(monkeypatch, tmp_path, 
     _restore_without_postgres(monkeypatch, tmp_path, False)
     monkeypatch.setattr(restore.databases, "save_snapshot", fails)
     with pytest.raises(typer.Exit):
-        restore.restore(None, "mydb", None, "postgres", False, None, tmp_path, False, True)
+        restore.restore(None, "mydb", None, "postgres", False, None, tmp_path, False, True, False)
     assert "restored, but 1 step(s) failed: snapshot" in capsys.readouterr().out
+
+
+# ---------- a dump from a newer PostgreSQL ----------
+
+HEADER = b"""--
+-- PostgreSQL database dump
+--
+
+\\restrict sVa85AMsdlHQB5nYtcqepsn6IVEJ3D14QIVXcDAKXUhkU4mcmbhkURdft06afcY
+
+-- Dumped from database version 18.7 (Ubuntu 18.7-1.pgdg24.04+1)
+-- Dumped by pg_dump version 18.7 (Ubuntu 18.7-1.pgdg24.04+1)
+
+SET statement_timeout = 0;
+CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;
+CREATE TABLE public.res_partner (
+"""
+
+
+def test_versions_read_from_the_dump_and_from_postgres():
+    assert restore_sql.dump_versions(HEADER.splitlines(keepends=True)) == ((18, 7), (18, 7))
+    assert restore_sql.dump_versions([b"SELECT 1;\n"]) == (None, None)
+    assert restore_sql.parse_version("18.4 (Ubuntu 18.4-1.pgdg24.04+1)\n") == (18, 4)
+    assert restore_sql.parse_version("psql (PostgreSQL) 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)") == (16, 15)
+    assert restore_sql.parse_version("") is None
+
+
+def test_an_older_postgres_is_told_how_to_update():
+    problem = restore_sql.version_problem
+    dump = ((18, 7), (18, 7))
+    assert problem(dump, ((18, 7), (18, 7))) is None
+    assert problem(dump, ((18, 8), (19, 0))) is None  # newer is fine
+    assert problem(dump, (None, None)) is None  # unknown: the restore says why it cannot connect
+    assert problem((None, None), ((16, 0), (16, 0))) is None
+
+    server = problem(dump, ((18, 4), (18, 7)), ["vector"])
+    assert server[0] == ("The dump comes from PostgreSQL 18.7 and your server is 18.4: "
+                         "an older PostgreSQL can refuse what a newer one wrote.")
+    assert server[1] == "To update it: sudo apt update && sudo apt install --only-upgrade postgresql-18 postgresql-18-pgvector"
+    both = problem(dump, ((18, 4), (18, 2)))
+    assert "; it was written by pg_dump 18.7 and your psql is 18.2" in both[0]
+    assert both[1].endswith("--only-upgrade postgresql-18 postgresql-client-18")  # no pgvector: not in the dump
+    client = problem(dump, ((18, 7), (18, 4)))
+    assert client[0].startswith("The dump was written by pg_dump 18.7 and your psql is 18.4")
+    assert client[1].endswith("--only-upgrade postgresql-client-18")
+    major = problem(dump, ((16, 15), (16, 15)))
+    assert major[1] == "To update it: install PostgreSQL 18 and postgresql-client-18 (a newer major version)"
+
+
+def _zip_with_header(path):
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("dump.sql", HEADER + b"    id integer NOT NULL\n);\n")
+    return path
+
+
+def test_restore_refuses_a_dump_from_a_newer_postgres_before_changing_anything(monkeypatch, tmp_path, capsys):
+    zip_path = _zip_with_header(tmp_path / "prod.zip")
+    touched = []
+    monkeypatch.setattr(restore.config, "load_config", lambda required: {})
+    monkeypatch.setattr(restore.commands, "names", lambda ctx: [])
+    monkeypatch.setattr(restore, "get_zip_path", lambda name, folder: zip_path)
+    monkeypatch.setattr(restore_sql, "local_versions", lambda: ((18, 4), (18, 7)))
+    monkeypatch.setattr(restore, "extract_dump", lambda zip_path, tmp: touched.append("extract") or (tmp / "dump.sql", None))
+    monkeypatch.setattr(restore, "restore_db", lambda *args: touched.append(args[-1]))
+    monkeypatch.setattr(restore, "restore_filestore", lambda *args: None)
+    monkeypatch.setattr(restore_steps, "run_steps", lambda *args, **kwargs: [])
+
+    with pytest.raises(typer.Exit):
+        restore.restore(None, "mydb", None, "postgres", False, None, tmp_path, False, False, False)
+    out = capsys.readouterr().out
+    assert touched == []  # nothing extracted, the existing database not dropped
+    assert "❌ The dump comes from PostgreSQL 18.7 and your server is 18.4" in out
+    assert "--only-upgrade postgresql-18 postgresql-18-pgvector" in out and "Nothing was changed" in out
+
+    restore.restore(None, "mydb", None, "postgres", False, None, tmp_path, False, False, True)  # --ignore-pg-version
+    assert "Restoring anyway" in capsys.readouterr().out
+    assert touched[0] == "extract" and touched[1][1].startswith("To update it")  # given to restore_db for its errors
+
+
+def test_sql_errors_of_a_dump_from_a_newer_postgres_say_why(monkeypatch, tmp_path, capsys):
+    for name in ("dropdb", "createdb"):
+        monkeypatch.setattr(restore.pg, name, lambda db: None)
+    monkeypatch.setattr(restore_sql, "create_privileged_extensions", lambda *args: None)
+    monkeypatch.setattr(restore_sql, "dump_extensions", lambda dump: [])
+    monkeypatch.setattr(restore_sql, "stream_dump", lambda db, dump: (0, 'ERROR:  unrecognized parameter "pg_attver"\n'))
+    problem = restore_sql.version_problem(((18, 7), (18, 7)), ((18, 4), (18, 7)))
+    with pytest.raises(typer.Exit):
+        restore.restore_db("mydb", tmp_path / "dump.sql", "postgres", False, problem)
+    out = capsys.readouterr().out
+    assert "💡 Probably because the dump comes from PostgreSQL 18.7 and your server is 18.4" in out
+    assert "--only-upgrade postgresql-18, then restore again." in out
+
+
+def test_version_of_a_zip_without_pg_dump_header(tmp_path):
+    assert restore.version_problem(make_zip(tmp_path / "plain.zip")) is None  # not written by pg_dump: nothing to say
+    assert restore.version_problem(make_zip(tmp_path / "nodump.zip", dump=False)) is None  # extract_dump reports it
+    assert restore.version_problem(tmp_path / "missing.zip") is None
+
+
+def test_doctor_warns_about_dumps_this_postgres_cannot_restore(monkeypatch, tmp_path):
+    from jsa import doctor
+    _zip_with_header(tmp_path / "prod.zip")
+    make_zip(tmp_path / "other.zip")
+    monkeypatch.setattr(doctor.config, "DUMPS_DIR", tmp_path)
+    monkeypatch.setattr(doctor.restore_sql, "local_versions", lambda: ((18, 4), (18, 7)))
+    checks = list(doctor.check_dumps())
+    assert checks[0][2].startswith("2 dump(s)")
+    assert [c[0] for c in checks[1:]] == [doctor.WARN]
+    assert checks[1][2].startswith("prod.zip: The dump comes from PostgreSQL 18.7")
 
 
 # ---------- the steps of config.toml ----------

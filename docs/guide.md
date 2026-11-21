@@ -20,6 +20,9 @@ tests, your own commands and the development of jsa itself.
 - PostgreSQL: the client tools (`psql`, `createdb`, `dropdb`) and a server your user can connect to without a
   password, as for Odoo itself. Your role does not need to be superuser: `restore` uses `sudo -u postgres` only for
   the extensions only a superuser can create (pgvector, used by Odoo's AI features).
+- Keep PostgreSQL at least as recent as your production's, minor updates included (`sudo apt update && sudo apt
+  install --only-upgrade postgresql-18 postgresql-client-18`): an older PostgreSQL can refuse what a newer one wrote
+  (18.7 added a column option, `pg_attver`, that older 18.x servers reject). `restore` and `doctor` check it.
 - `git`, for `jsa update`, `jsa version` and `jsa bisect`.
 - Optional: graphviz (`dot`) to draw the dependency graph of the report.
 - For the commands that run Odoo (coverage, `--neutralize`, `bisect`, ui tests with `-p`): the Odoo sources and a
@@ -86,7 +89,9 @@ steps: 2FA off, login `admin` / password `admin`, expiration date, outgoing mail
 
 **`jsa restore <db> [zip]`** restores an Odoo backup zip (as downloaded from odoo.sh or the database manager):
 1. The zip is looked for in `dumps/` (or given as a path; with a single zip in `dumps/` the name can be left out).
-   Only `dump.sql` and `filestore/` are extracted.
+   If the dump comes from a newer PostgreSQL than your server (or was written by a newer `pg_dump` than your
+   `psql`), restore stops before changing anything and gives the command to update (`--ignore-pg-version` goes on
+   anyway). Then only `dump.sql` and `filestore/` are extracted.
 2. `<db>` is dropped and created again. The extensions only a superuser can create are created first, with
    `sudo -u postgres` when your role is not superuser (`--postgres-user` for another system user).
 3. The dump is loaded with a progress line. SQL errors stop it before anything is sanitized
