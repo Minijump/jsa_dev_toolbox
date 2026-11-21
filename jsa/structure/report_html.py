@@ -5,6 +5,8 @@ click), the dependency graph (with or without standard modules) and the trend of
 Coverage is a continuous color from red (0%) to green (100%). States use a symbol + a label, never the color alone.
 """
 import json
+import math
+from datetime import datetime
 from html import escape as E
 from typing import Optional
 
@@ -92,10 +94,18 @@ margin-right:8px;overflow:hidden}
 .legend .grad{display:inline-block;width:120px;height:12px;border-radius:3px;vertical-align:-2px;margin:0 5px;background:linear-gradient(90deg,hsl(0,55%,58%),hsl(60,55%,58%),hsl(120,55%,58%))}
 .legend .dot{background:#ec835a;color:#fff;font-weight:700;font-size:10px;line-height:14px;text-align:center;font-style:normal;border-color:#ec835a}
 .legend i{display:inline-block;width:14px;height:14px;border-radius:50%;vertical-align:-3px;margin-right:4px;border:1px solid #898781}
-.charts{display:flex;gap:24px;flex-wrap:wrap}
 .series[hidden]{display:none}
-.chart text{fill:var(--muted);font-size:11px}.chart .title{fill:var(--ink);font-size:13px;font-weight:600}
+details.trend{border-top:1px solid var(--grid)}details.trend:first-child{border-top:none}
+details.trend summary{display:grid;grid-template-columns:10px minmax(120px,290px) 80px 1fr;gap:14px;align-items:baseline;
+padding:9px 0;cursor:pointer;list-style:none}
+details.trend summary::-webkit-details-marker{display:none}
+details.trend summary::before{content:"▸";color:var(--muted)}details.trend[open] summary::before{content:"▾"}
+details.trend summary:hover .tname{color:var(--accent)}
+.tname{font-weight:600}.tnow{font-weight:600;font-variant-numeric:tabular-nums}.tnote{color:var(--ink2);font-size:13px}
+.chart{display:block;width:100%;height:auto;margin:0 0 10px}
+.chart text{fill:var(--muted);font-size:11px}
 .chart .last{fill:var(--ink);font-size:12px;font-weight:600}
+.chart .event line{stroke:var(--ink2);stroke-dasharray:4 3}.chart .event text{fill:var(--ink2);font-size:11px}
 .chart .gridline{stroke:var(--grid)}.chart .axisline{stroke:var(--axis)}
 .chart polyline{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round}
 .chart .dot{fill:var(--accent);stroke:var(--surface);stroke-width:2}.chart .hit{fill:transparent}
@@ -192,6 +202,9 @@ if (series) {
   const pick = () => document.querySelectorAll('.series').forEach(b => b.hidden = b.dataset.key !== series.value);
   series.addEventListener('change', pick); pick();
 }
+// a chart folded or unfolded: the same in the trends of the other ways of measuring
+document.querySelectorAll('details.trend').forEach(d => d.addEventListener('toggle', () =>
+  document.querySelectorAll(`details.trend[data-chart="${d.dataset.chart}"]`).forEach(o => { if (o.open !== d.open) o.open = d.open; })));
 const graphs = () => [...document.querySelectorAll('.depgraph')];
 const std = document.getElementById('std'), dup = document.getElementById('dup');
 if (std) {
@@ -456,56 +469,173 @@ def _graph(graphs: dict) -> str:
             '<span>⋯ duplicate link: A → C while A → B → C already shows it (hidden unless asked)</span></div></section>')
 
 
-def line_chart(title: str, points: list[tuple[str, float]], unit: str = "", y_max: Optional[float] = None) -> str:
-    """Small line chart of one series (the title names it). Each point has a tooltip; the last value is labeled."""
-    width, height, left, right, top, bottom = 440, 170, 42, 52, 30, 24
-    y_max = y_max or max(1, *(v for _, v in points))
+def number(value: float) -> str:
+    """12,480 / 70.4: a value as shown in a label."""
+    return f"{int(value):,}" if value == int(value) else f"{value:,.1f}"
+
+
+def axis_number(value: float) -> str:
+    """12.5k: short, for the axis."""
+    return f"{value / 1000:,.4g}k" if abs(value) >= 10000 else f"{value:,.6g}"
+
+
+def zoomed_axis(values: list[float]) -> tuple[float, float, float]:
+    """(low, high, step) of an axis covering the values with round ticks, instead of starting at 0."""
+    low, high = min(values), max(values)
+    span = (high - low) or max(abs(high) * 0.02, 1)  # a flat line: a narrow band around it
+    magnitude = 10 ** math.floor(math.log10(span / 2))
+    step = next(m * magnitude for m in (1, 2, 2.5, 5, 10) if m * magnitude >= span / 2)
+    low, high = math.floor(low / step) * step, math.ceil(high / step) * step
+    return low, (high if high > low else low + step), step
+
+
+def line_chart(title: str, points: list[tuple], unit: str = "", y_max: Optional[float] = None,
+               zoom: bool = False, events: list[tuple[float, str]] = ()) -> str:
+    """Line chart of one measure over the runs (the section around it names it). points: (label, value[, tooltip]).
+    Each point has a tooltip (its label unless given), the first and last labels are on the x axis, the last
+    value is labeled. zoom: the axis covers the values instead of starting at 0 (+2% on 80,000 lines of code would
+    look flat). events: (position on the x axis, counted in runs; what happened), drawn as dashed vertical lines.
+    As wide as the page's sections (1200 = their width on a large screen: the text keeps its size there)."""
+    width, height, left, right, top, bottom = 1200, 200, 48, 72, 26, 24
+    values = [p[1] for p in points]
+    if zoom:
+        low, high, step = zoomed_axis(values)
+        ticks = [low + i * step for i in range(round((high - low) / step) + 1)]
+    else:
+        low, high = 0, y_max or max(1, *values)
+        ticks = [0, high / 2, high] if unit or high % 2 == 0 else [0, high]  # no half tick for counts
     x = lambda i: left + i * (width - left - right) / max(len(points) - 1, 1)
-    y = lambda v: top + (1 - v / y_max) * (height - top - bottom)
-    out = [f'<svg class="chart" viewBox="0 0 {width} {height}" width="{width}" role="img" aria-label="{E(title)}">',
-           f'<text class="title" x="0" y="14">{E(title)}</text>']
-    for tick in (0, y_max / 2, y_max) if unit or y_max % 2 == 0 else (0, y_max):  # no half tick for counts
-        css = "axisline" if tick == 0 else "gridline"
+    y = lambda v: top + (1 - (v - low) / (high - low)) * (height - top - bottom)
+    out = [f'<svg class="chart" viewBox="0 0 {width} {height}" width="{width}" role="img" aria-label="{E(title)}">']
+    for tick in ticks:
+        css = "axisline" if tick == ticks[0] else "gridline"
         out.append(f'<line class="{css}" x1="{left}" x2="{width - right}" y1="{y(tick):.1f}" y2="{y(tick):.1f}"/>'
-                   f'<text x="{left - 6}" y="{y(tick) + 4:.1f}" text-anchor="end">{tick:g}{unit}</text>')
-    out.append('<polyline points="' + " ".join(f"{x(i):.1f},{y(v):.1f}" for i, (_, v) in enumerate(points)) + '"/>')
-    for i, (label, value) in enumerate(points):
-        out.append(f'<circle class="hit" cx="{x(i):.1f}" cy="{y(value):.1f}" r="12"><title>{E(label)}: {value:g}{unit}</title></circle>'
-                   f'<circle class="dot" cx="{x(i):.1f}" cy="{y(value):.1f}" r="4"><title>{E(label)}: {value:g}{unit}</title></circle>')
-    last_label, last_value = points[-1]
-    out.append(f'<text class="last" x="{x(len(points) - 1) + 9:.1f}" y="{y(last_value) + 4:.1f}">{last_value:g}{unit}</text>')
+                   f'<text x="{left - 6}" y="{y(tick) + 4:.1f}" text-anchor="end">{axis_number(tick)}{unit}</text>')
+    for position, text in events:
+        if 0 <= position <= len(points) - 1:
+            at, near_end = x(position), x(position) > left + 0.7 * (width - left - right)
+            short = text if len(text) <= 40 else text[:39] + "…"
+            out.append(f'<g class="event"><title>{E(text)}</title><line x1="{at:.1f}" x2="{at:.1f}" y1="{top - 6}" '
+                       f'y2="{height - bottom}"/><text x="{at + (-5 if near_end else 5):.1f}" y="{top - 9}" '
+                       f'text-anchor="{"end" if near_end else "start"}">{E(short)}</text></g>')
+    out.append('<polyline points="' + " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(values)) + '"/>')
+    for i, (label, value, *tooltip) in enumerate(points):
+        tip = f"<title>{E(tooltip[0] if tooltip else label)}: {number(value)}{unit}</title>"
+        out.append(f'<circle class="hit" cx="{x(i):.1f}" cy="{y(value):.1f}" r="12">{tip}</circle>'
+                   f'<circle class="dot" cx="{x(i):.1f}" cy="{y(value):.1f}" r="4">{tip}</circle>')
+    last_label, last_value = points[-1][:2]
+    out.append(f'<text class="last" x="{x(len(points) - 1) + 9:.1f}" y="{y(last_value) + 4:.1f}">{number(last_value)}{unit}</text>')
     out.append(f'<text x="{left}" y="{height - 6}">{E(points[0][0])}</text>')
     if len(points) > 1:
         out.append(f'<text x="{width - right}" y="{height - 6}" text-anchor="end">{E(last_label)}</text>')
     return "".join(out) + '</svg>'
 
 
-def _trend(history: list[dict]) -> str:
-    """One trend per way of measuring (Odoo version, whole or one by one): runs measured differently do not compare."""
-    measured = [r for r in history if r.get('coverage') is not None]
+# the charts of the trend, in their default order: (key in the history = name in config.toml, title, unit, zoomed axis)
+TREND_CHARTS = (
+    ('coverage', "Coverage", "%", False),
+    ('loc', "Lines of code", "", True),
+    ('tests', "Tests", "", True),
+    ('failed', "Failed tests", "", False),
+    ('not_installable', "Not installable addons", "", False),
+    ('no_tests', "Addons without tests", "", False),
+    ('addons', "Addons", "", True),
+    ('enterprise', "Enterprise dependencies", "", False),
+)
+TRENDS_OPEN = ('coverage', 'loc')  # unfolded at first, unless [report] trends_open of config.toml says otherwise
+
+
+def code_date(run: dict):
+    """When the measured code was written: the date of its last commit (recorded by the runs since 2026-11-21), else
+    the date of the run. Measuring old commits places them in the past."""
+    return report.parse_date(run.get('code_date') or run.get('date'))
+
+
+def event_positions(dates: list, events: list[dict]) -> list[tuple[float, str]]:
+    """Where each event falls on an x axis with one step per run: between the two runs around its date."""
+    found = []
+    for event in events:
+        when = report.parse_date(event['date'])
+        for i in range(len(dates) - 1):
+            if dates[i] <= when <= dates[i + 1]:
+                span = (dates[i + 1] - dates[i]).total_seconds()
+                found.append((i + ((when - dates[i]).total_seconds() / span if span else 0), str(event['event'])))
+                break
+    return found
+
+
+def _trend_section(key: str, title: str, unit: str, is_open: bool, zoom: bool, runs: list[dict], events: list[dict],
+                   value_of, custom: bool = False) -> str:
+    """One chart in its foldable section, titled with its last value. The runs are in the order of their code_date.
+    custom: a measure of config.toml, said to come later when no run recorded it yet (other charts are left out)."""
+    points = [(r, value_of(r)) for r in runs if value_of(r) is not None]
+    head = f'<details class="trend" data-chart="{key}"{" open" if is_open else ""}><summary><span class="tname">{E(title)}</span>'
+    if not points:
+        return (head + '<span class="tnow">–</span><span class="tnote">recorded from the next run measuring the coverage (-c)</span>'
+                       '</summary></details>') if custom else ""
+    label = lambda r: str(r.get('code_date') or r.get('date', ''))[:16].replace('T', ' ')
+    head += f'<span class="tnow">{number(points[-1][1])}{unit}</span>'
+    if len(points) == 1:
+        return head + f'<span class="tnote">one run so far ({E(label(points[0][0]))})</span></summary></details>'
+    # the tooltip of a run measured after its code was written (an old commit) gives both dates
+    tip = lambda r: label(r) + (f" (measured {str(r['date'])[:10]})" if r.get('code_date') and
+                                str(r['code_date'])[:10] != str(r.get('date', ''))[:10] else "")
+    dates = [code_date(r) for r, _ in points]
+    chart = line_chart(title, [(label(r), v, tip(r)) for r, v in points], unit, 100 if unit == "%" else None, zoom,
+                       event_positions(dates, events) if all(dates) else [])
+    return head + '</summary>' + chart + '</details>'
+
+
+def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict] = None) -> str:
+    """One trend per way of measuring (Odoo version, whole or one by one): runs measured differently do not compare.
+    `measures`: the labels of [[report.measures]]. `choice`: [report] trends (the charts shown: by default all, the
+    measures last) and trends_open (unfolded at first: by default coverage and lines of code). The unfolded charts
+    come first in the order of trends_open, then the others in the order of trends."""
+    choice = choice or {}
+    listed = choice.get('trends', [key for key, *_ in TREND_CHARTS] + list(measures))
+    opened = [name for name in choice.get('trends_open', TRENDS_OPEN) if name in listed]
+    unfolded = set(opened)
+    # the unfolded charts first, in the order of trends_open, then the folded ones in the order of trends
+    shown_charts = opened + [name for name in listed if name not in unfolded]
+    if not shown_charts:
+        return ""
+    runs, events = report.runs_and_events(history)
+    measured = [r for r in runs if r.get('coverage') is not None]
     series = {}
     for run in measured:
         series.setdefault(report.series_of(run), []).append(run)
-    drawn = {key: runs[-30:] for key, runs in series.items() if len(runs) >= 2}
+    for lines in series.values():  # in the order of their code, whatever the order they were measured in
+        lines.sort(key=lambda r: code_date(r) or datetime.min)
+    drawn = {key: lines[-30:] for key, lines in series.items() if len(lines) >= 2}
     if not drawn:
         return ""
     latest = report.series_of(measured[-1])
     shown = latest if latest in drawn else max(drawn, key=lambda key: measured.index(drawn[key][-1]))
-    label = lambda r: str(r.get('date', ''))[:16].replace('T', ' ')
     keys = sorted(drawn, key=lambda key: (key != shown, report.series_label(key)))
     select = ('<div class="controls"><select id="series" aria-label="Which runs">' + "".join(
         f'<option value="{i}">{E(report.series_label(key))} ({len(series[key])} runs)</option>' for i, key in enumerate(keys))
         + '</select></div>') if len(keys) > 1 else f'<p class="meta">{E(report.series_label(shown))}</p>'
-    blocks = "".join(
-        f'<div class="series charts" data-key="{i}"{"" if key == shown else " hidden"}>'
-        + line_chart("Coverage", [(label(r), r['coverage']) for r in drawn[key]], "%", 100)
-        + line_chart("Failed tests", [(label(r), r.get('failed', 0)) for r in drawn[key]])
-        + line_chart("Not installable addons", [(label(r), r.get('not_installable', 0)) for r in drawn[key]]) + '</div>'
-        for i, key in enumerate(keys))
-    return ('<section><h2>Trend of the measured runs</h2>' + select + blocks
+    builtin = {key: (title, unit, zoom) for key, title, unit, zoom in TREND_CHARTS}
+
+    def section(name: str, lines: list[dict]) -> str:
+        if name in builtin:
+            title, unit, zoom = builtin[name]
+            return _trend_section(name, title, unit, name in unfolded, zoom, lines, events, lambda r: r.get(name))
+        if name in measures:  # data-chart: an id, the label may hold any character
+            return _trend_section(f"m{list(measures).index(name)}", name, "", name in unfolded, True, lines, events,
+                                  lambda r: (r.get('measures') or {}).get(name), custom=True)
+        return ""  # a measure removed from config.toml
+
+    sections = lambda lines: "".join(section(name, lines) for name in shown_charts)
+    blocks = "".join(f'<div class="series" data-key="{i}"{"" if key == shown else " hidden"}>{sections(drawn[key])}</div>'
+                     for i, key in enumerate(keys))
+    return ('<section id="trends"><h2>Trend of the measured runs</h2>' + select + blocks
             + '<p class="meta" style="margin:8px 0 0">One point per run that measured the coverage, with the runs measured the '
-            'same way only (same Odoo version; whole, or one by one). To forget a run, delete its line in '
-            '<code>history.jsonl</code>.</p></section>')
+            'same way only (same Odoo version; whole, or one by one), at the date of the code measured: its last commit '
+            '(the date of the run when it had uncommitted changes), so measuring old commits fills the past. '
+            'Click a title to fold or unfold its chart. To forget a '
+            'run, delete its line in <code>history.jsonl</code>; to mark an event (a release, someone joining the team), add '
+            'a line there: <code>{"date": "2026-11-01", "event": "Release 2.0"}</code>.</p></section>')
 
 
 def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Optional[dict], old_date: Optional[str],
@@ -520,7 +650,8 @@ def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Option
     # measured now: the measures are compared with the previous run measured the same way (the last line of the
     # history is this run)
     series = report.series_of(meta) if meta.get('mode') else None
-    previous = next((r for r in reversed(history[:-1]) if report.series_of(r) == series), None) if series else None
+    runs = report.runs_and_events(history)[0]
+    previous = next((r for r in reversed(runs[:-1]) if report.series_of(r) == series), None) if series else None
     if meta.get('mode'):
         how = f"coverage measured in mode <strong>{E(meta['mode'])}</strong> with profile <strong>{E(str(meta['profile']))}</strong>"
     elif summary['measured']:
@@ -532,7 +663,7 @@ def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Option
         f'<title>Codebase report</title><style>{CSS}</style><style id="graph-css">{GRAPH_CSS}</style></head><body><main>',
         f'<h1>Codebase report</h1><p class="meta">Generated {E(when)} · {how}</p>',
         _tiles(summary, old_summary, previous, series), _attention(state, meta.get('standard_tests')), _standard(meta.get('standard_tests')), _enterprise(enterprise), _changes(diff, old_date), _table(state, enterprise),
-        _graph(graphs), _trend(history),
+        _graph(graphs), _trend(history, meta.get('measures') or [], meta.get('trends')),
         '<footer>Files next to this report: <code>state.json</code> (last results, reused for unchanged addons), '
         '<code>history.jsonl</code> (one line per measured run), <code>coverage_odoo.log</code> (full Odoo log of the last measure).</footer>',
         '</main><script type="application/json" id="data">', json.dumps(data).replace("</", "<\\/"), '</script>',

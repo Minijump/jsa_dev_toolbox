@@ -10,6 +10,22 @@ addons_roots = [
     "~/projects/OCA",
 ]
 
+# The trend charts of the report of 'jsa structure': those shown, and those unfolded at first. The unfolded ones come
+# first, in the order of trends_open, then the folded ones in the order of trends. Default: all of them (your
+# measures last), coverage and lines of code unfolded. The charts: coverage, loc (lines of code), tests, failed,
+# not_installable, no_tests, addons, enterprise, and the labels of your measures (below).
+#   [report]
+#   trends = ["coverage", "loc", "tests", "TODO comments"]
+#   trends_open = ["TODO comments", "coverage"]
+
+# Your own trends in the report of 'jsa structure': a pattern (regular expression) counted in the code of the custom
+# addons (the files counted as lines of code: no tests, translations, migrations), recorded by the runs measuring the
+# coverage (-c) and drawn with the other trends. files (optional): only the files with these names.
+#   [[report.measures]]
+#   label = "TODO comments"
+#   pattern = '\bTODO\b'              # single quotes: a backslash stays a backslash
+#   files = ["*.py", "*.js", "*.xml"]
+
 # What 'jsa restore' does to the restored database, in this order and in one transaction.
 # - requires: the step is skipped when this table ("table" or "table.column") does not exist (module not installed)
 # - odoo_versions = [19]: the step is skipped on the databases of the other versions of Odoo

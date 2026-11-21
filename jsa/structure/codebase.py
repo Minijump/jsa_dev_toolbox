@@ -1,18 +1,23 @@
 """structure: dependency graph, lines of code and optional test coverage of the custom addons."""
+import fnmatch
 import hashlib
+import re
 import subprocess
+from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 import typer
 
 from ..core import config, odoo, ui
 from ..core.addons import DependencyGraph, files_digest, find_addons, read_manifests, standard_depends
-from . import coverage, report
+from . import coverage, report, report_html
 
 LOC_EXTENSIONS = {'.py', '.xml', '.js', '.scss', '.css', '.csv'}
 LOC_EXCLUDED_DIRS = {'migrations', 'tests', 'i18n'}
+MEASURE_KEYS = ('label', 'pattern', 'files')
 
 
 class Mode(str, Enum):
@@ -21,18 +26,128 @@ class Mode(str, Enum):
     both = "both"
 
 
+def code_files(addon: Path) -> Iterator[Path]:
+    """The files counted as code: no tests, translations, migrations."""
+    for f in addon.rglob('*'):
+        if f.is_file() and f.suffix.lower() in LOC_EXTENSIONS \
+                and not any(part in LOC_EXCLUDED_DIRS for part in f.relative_to(addon).parts):
+            yield f
+
+
 def count_loc(addon: Path) -> int:
     """Lines of code of an addon, without tests, translations and migrations."""
     loc = 0
-    for f in addon.rglob('*'):
-        if not f.is_file() or f.suffix.lower() not in LOC_EXTENSIONS:
-            continue
-        if any(part in LOC_EXCLUDED_DIRS for part in f.relative_to(addon).parts):
-            continue
+    for f in code_files(addon):
         text = f.read_text(encoding='utf-8', errors='ignore')
         if text:
             loc += text.count('\n') + 1
     return loc
+
+
+# ---------- measures of config.toml: a pattern counted in the code, drawn in the trends ----------
+
+@dataclass
+class Measure:
+    label: str
+    regex: re.Pattern
+    files: tuple[str, ...] = ()  # file name patterns ('*.py'); empty: every code file
+
+
+def measures_from_config(conf: dict) -> list[Measure]:
+    """[[report.measures]] of config.toml. A mistake stops the command before anything is measured."""
+    def refuse(number: int, why: str):
+        typer.echo(f"❌ config.toml: [[report.measures]] #{number} {why}")
+        raise typer.Exit(code=1)
+
+    measures = []
+    for number, item in enumerate(conf.get('report', {}).get('measures', []), 1):
+        if not isinstance(item, dict):
+            refuse(number, "must be a table: label = \"...\", pattern = \"...\"")
+        unknown = sorted(set(item) - set(MEASURE_KEYS))
+        if unknown:
+            refuse(number, f"has the key(s) {', '.join(unknown)}, which do not exist (misspelled?): use {', '.join(MEASURE_KEYS)}")
+        label, pattern, files = item.get('label'), item.get('pattern'), item.get('files', [])
+        if not isinstance(label, str) or not label.strip() or not isinstance(pattern, str) or not pattern:
+            refuse(number, "needs a label and a pattern (a regular expression)")
+        if label in (m.label for m in measures):
+            refuse(number, f"has the label '{label}' of another measure")
+        if label in (key for key, *_ in report_html.TREND_CHARTS):
+            refuse(number, f"has the label '{label}', the name of a chart of jsa: choose another one")
+        files = [files] if isinstance(files, str) else files
+        if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
+            refuse(number, "files must be a list of file name patterns, e.g. [\"*.py\", \"*.xml\"]")
+        try:
+            regex = re.compile(pattern, re.MULTILINE)
+        except re.error as e:
+            refuse(number, f"('{label}'): the pattern is not a valid regular expression: {e}")
+        measures.append(Measure(label.strip(), regex, tuple(files)))
+    return measures
+
+
+REPORT_KEYS = ('trends', 'trends_open', 'measures')
+
+
+def trends_from_config(conf: dict, measures: list[Measure]) -> dict:
+    """[report] trends (the charts shown, in this order) and trends_open (unfolded at first) of config.toml; the keys
+    left out keep their default (every chart; coverage and lines of code unfolded). A mistake stops the command."""
+    def refuse(why: str):
+        typer.echo(f"❌ config.toml: [report] {why}")
+        raise typer.Exit(code=1)
+
+    section = conf.get('report', {})
+    if not isinstance(section, dict):
+        refuse("must be a table")
+    unknown = sorted(set(section) - set(REPORT_KEYS))
+    if unknown:
+        refuse(f"has the key(s) {', '.join(unknown)}, which do not exist (misspelled?): use {', '.join(REPORT_KEYS)}")
+    names = [key for key, *_ in report_html.TREND_CHARTS] + [m.label for m in measures]
+    choice = {}
+    for key in ('trends', 'trends_open'):
+        if key not in section:
+            continue
+        value = section[key]
+        if not isinstance(value, list) or not all(isinstance(name, str) for name in value):
+            refuse(f"{key} must be a list of chart names, e.g. [\"coverage\", \"loc\"]")
+        wrong = [name for name in value if name not in names]
+        if wrong:
+            refuse(f"{key}: no chart named {', '.join(repr(n) for n in wrong)}. The charts: {', '.join(names)}")
+        choice[key] = value
+    hidden = [name for name in choice.get('trends_open', []) if 'trends' in choice and name not in choice['trends']]
+    if hidden:
+        refuse(f"trends_open lists {', '.join(repr(n) for n in hidden)}, which trends does not show")
+    return choice
+
+
+def count_measures(addons: dict[str, Path], measures: list[Measure]) -> dict[str, int]:
+    """{label: matches of its pattern in the code files of all the addons}."""
+    counts = dict.fromkeys((m.label for m in measures), 0)
+    for addon in addons.values() if measures else ():
+        for f in code_files(addon):
+            wanted = [m for m in measures if not m.files or any(fnmatch.fnmatch(f.name, p) for p in m.files)]
+            if wanted:
+                text = f.read_text(encoding='utf-8', errors='ignore')
+                for m in wanted:
+                    counts[m.label] += len(m.regex.findall(text))
+    return counts
+
+
+def code_date(roots: list[Path]) -> Optional[str]:
+    """When the measured code was written: the last commit changing the addons folders, so that measuring an old
+    commit places it in the past of the trends. None (the run is placed at its own date) when a folder is not in git
+    or has uncommitted changes."""
+    dates = []
+    for root in roots:
+        try:
+            status = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--", "."],
+                                    capture_output=True, text=True, timeout=60)
+            log = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%ct", "--", "."],
+                                 capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if status.returncode or status.stdout.strip() or log.returncode or not log.stdout.strip().isdigit():
+            return None
+        dates.append(datetime.fromtimestamp(int(log.stdout.strip())))  # local time, like the date of the runs
+    return max(dates).isoformat(timespec='seconds') if dates else None
 
 
 def enterprise_modules(conf: dict) -> Optional[set[str]]:
@@ -80,6 +195,8 @@ def structure(
     mode whole, any change runs everything again.
     """
     conf = config.load_config()
+    measures = measures_from_config(conf)
+    trends = trends_from_config(conf, measures)
     roots = config.addons_roots(conf)
     missing = [str(r) for r in roots if not r.is_dir()]
     if not roots or missing:
@@ -159,6 +276,9 @@ def structure(
                                                    measure_coverage=False, standard_tests=standard_tests, append=True)
                 results.update(coverage.merge_together(alone, found))
             run = {'mode': mode.value, 'profile': profile, 'odoo': odoo_version}
+            written = code_date(roots)
+            if written:
+                run['code_date'] = written
         problems = {name: r for name, r in results.items() if r.coverage == coverage.NOT_INSTALLABLE or r.failures}
         for name, r in sorted(problems.items()):
             typer.echo(f"⚠️ {name}: {coverage.describe(r)}")
@@ -174,7 +294,8 @@ def structure(
         failed = sum(len(r['failed']) for r in standard.values())
         typer.echo(f"{'⚠️' if failed else '✅'} Standard modules: {sum(r['tests'] for r in standard.values())} test(s) "
                    f"in {len(standard)} module(s), {failed} failed")
-    report.write_reports(loc, dependencies, results, config.ANALYSIS_DIR, state_extra, run, standard)
+    report.write_reports(loc, dependencies, results, config.ANALYSIS_DIR, state_extra, run, standard,
+                         count_measures(addons, measures), trends)
     if open_it:
         open_report()
     else:

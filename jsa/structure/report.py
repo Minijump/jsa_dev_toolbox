@@ -4,7 +4,8 @@ and layout of the dependency graph. The page itself is rendered by report_html.
 Files written in the analysis folder:
 - report.html   the report (the only file to open)
 - state.json    last state of each addon; also the cache of the coverage measures
-- history.jsonl one line per measured run, for the trend charts (delete a line to forget a run)
+- history.jsonl one line per measured run, for the trend charts (delete a line to forget a run). Lines added by
+                hand as {"date": "2026-11-01", "event": "Release 2.0"} are events: a vertical line on the charts.
 """
 import json
 import math
@@ -170,6 +171,21 @@ def load_history(history_file: Path) -> list[dict]:
     return runs
 
 
+def parse_date(text) -> Optional[datetime]:
+    """A date of the history ('2026-11-01' or '2026-11-01T10:28:14'), without time zone; None if not a date."""
+    try:
+        return datetime.fromisoformat(str(text)).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def runs_and_events(history: list[dict]) -> tuple[list[dict], list[dict]]:
+    """The measured runs, and the events added by hand ({"date": ..., "event": "what happened"}, a valid date)."""
+    runs = [line for line in history if not line.get('event')]
+    events = [line for line in history if line.get('event') and parse_date(line.get('date'))]
+    return runs, events
+
+
 def series_of(run: dict) -> tuple[Optional[int], str]:
     """(Odoo version, method) of a measured run: it is compared with the runs measured the same way only.
     'isolated' and 'both' share their method: both take the coverage of each addon alone. A run recorded without its
@@ -265,9 +281,12 @@ def load_standard_tests(out_dir: Path) -> Optional[dict]:
 
 
 def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Result]], out_dir: Path,
-                  extra: Optional[dict] = None, run: Optional[dict] = None, standard: Optional[dict] = None):
+                  extra: Optional[dict] = None, run: Optional[dict] = None, standard: Optional[dict] = None,
+                  measures: Optional[dict] = None, trends: Optional[dict] = None):
     """`run` describes a coverage run ({'mode', 'profile'}) when addons were measured now: it is added to the history.
-    `standard`: the results of the standard modules' tests run now; else those of the last time they were run."""
+    `standard`: the results of the standard modules' tests run now; else those of the last time they were run.
+    `measures`: the counts of [[report.measures]] of config.toml ({label: count}), recorded with the run.
+    `trends`: [report] trends / trends_open of config.toml, the charts shown and unfolded (none: the default)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     old, old_date = load_state(out_dir)
     standard_tests = load_standard_tests(out_dir)
@@ -277,7 +296,7 @@ def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Res
         standard_tests = {'date': now, 'modules': standard}
     summary = summarize(new)
     if run:
-        append_history(out_dir / HISTORY_FILE, {'date': now, **run, **summary})
+        append_history(out_dir / HISTORY_FILE, {'date': now, **run, **summary, **({'measures': measures} if measures else {})})
 
     typer.echo("🧭 Drawing the dependency graph...")
     # each picture has its own layout: without the duplicate links, it is drawn as if they did not exist
@@ -290,11 +309,15 @@ def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Res
 
     html = report_html.render(new, summary, summarize(old) if old else None, compute_diff(old, new) if old else None,
                               old_date, load_history(out_dir / HISTORY_FILE), graphs,
-                              {'generated_at': now, **(run or {}), 'standard_tests': standard_tests})
+                              {'generated_at': now, **(run or {}), 'standard_tests': standard_tests,
+                               'measures': list(measures or {}), 'trends': trends or {}})
     (out_dir / REPORT_FILE).write_text(html, encoding='utf-8')
     (out_dir / STATE_FILE).write_text(json.dumps({'schema': SCHEMA, 'generated_at': now, 'addons': new,
                                                   'standard_tests': standard_tests}, indent=1), encoding='utf-8')
     coverage = f"{summary['coverage']:.0f}% coverage" if summary['coverage'] is not None else "coverage not measured"
     typer.echo(f"📦 {summary['addons']} addons, {summary['loc']:,} lines, {coverage}, "
                f"{summary['tests'] - summary['failed']}/{summary['tests']} tests passed, {summary['not_installable']} not installable")
+    if measures:
+        typer.echo("📏 " + ", ".join(f"{label}: {count:,}" for label, count in measures.items())
+                   + ("" if run else " (the trends record them with the runs that measure the coverage, -c)"))
     typer.echo(f"✅ Report: {out_dir / REPORT_FILE}")

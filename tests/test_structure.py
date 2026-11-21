@@ -1,3 +1,10 @@
+import os
+import subprocess
+from datetime import datetime, timezone
+
+import pytest
+import typer
+
 from jsa.core import addons, odoo
 from jsa.structure import codebase, report, report_html
 from jsa.structure.coverage import NOT_INSTALLABLE, Result
@@ -213,14 +220,138 @@ def test_tiles_compare_the_measures_with_the_run_measured_the_same_way():
     assert "(+10 since previous run)" in tiles  # lines of code: against the previous report, whatever its method
     # a report that measured nothing compares no measure
     page = report_html.render({}, summary, previous_report, None, None, history, {}, {"generated_at": "2026-10-25T10:00:00"})
-    assert "pts since" not in page and "(+10 since previous run)" in page
+    tiles = page[page.index('<div class="tiles">'):page.index('</div></div></div>', page.index('Without tests'))]
+    assert "pts since" not in tiles and "(+10 since previous run)" in tiles
+
+
+def _run(day, coverage, loc, todo=None, **more):
+    line = {"date": f"2026-10-{day:02d}T10:00:00", "mode": "whole", "odoo": 19, "coverage": coverage, "loc": loc,
+            "tests": 100 + day, "failed": 1, "not_installable": 0, "no_tests": 2, "addons": 10, "enterprise": None, **more}
+    return {**line, "measures": {"TODO": todo}} if todo is not None else line
+
+
+def test_trend_charts_one_under_the_other_coverage_and_lines_of_code_open():
+    history = [_run(1, 60.0, 12000, todo=40), {"date": "2026-10-02", "event": "Release 2.0"},
+               {"date": "2026-09-01", "event": "Before the first run"}, {"date": "not a date", "event": "Broken"},
+               _run(3, 62.0, 12480, todo=31)]
+    page = report_html._trend(history, ["TODO", "Not recorded yet"])
+    order = [page.index(f'data-chart="{key}"') for key in ("coverage", "loc", "tests", "failed", "not_installable",
+                                                           "no_tests", "addons", "m0", "m1")]
+    assert order == sorted(order)
+    assert 'data-chart="coverage" open>' in page and 'data-chart="loc" open>' in page
+    assert 'data-chart="tests">' in page and 'data-chart="failed">' in page and 'data-chart="m0">' in page  # folded
+    assert 'data-chart="enterprise"' not in page  # never measured: no chart
+    assert '<span class="tname">Lines of code</span><span class="tnow">12,480</span></summary>' in page  # the last value only
+    assert "since" not in page
+    assert "recorded from the next run measuring the coverage (-c)" in page[page.index('data-chart="m1"'):]
+    # the event between the two runs is drawn on every chart, the one before the first run is not
+    assert page.count("<title>Release 2.0</title>") == 8 and "Before the first run" not in page and "Broken" not in page
+    runs, events = report.runs_and_events(history)
+    assert len(runs) == 2 and [e["event"] for e in events] == ["Release 2.0", "Before the first run"]
+    assert report_html.event_positions([report.parse_date("2026-10-01"), report.parse_date("2026-10-03")],
+                                       [{"date": "2026-10-02", "event": "x"}, {"date": "2026-10-03", "event": "y"}]) == [(0.5, "x"), (1.0, "y")]
+
+
+def test_charts_shown_and_unfolded_chosen_in_config(capsys):
+    measures = codebase.measures_from_config({"report": {"measures": [{"label": "TODO", "pattern": "TODO"}]}})
+    choose = lambda report: codebase.trends_from_config({"report": report}, measures)
+    assert choose({}) == {}  # nothing set: the default
+    runs = [_run(1, 60.0, 12000, todo=40), _run(3, 62.0, 12480, todo=31)]
+    order = lambda page: sorted((key for key in ("m0", "coverage", "failed", "tests", "loc") if f'data-chart="{key}"' in page),
+                                key=lambda key: page.index(f'data-chart="{key}"'))
+    choice = choose({"trends": ["tests", "TODO", "coverage", "failed"], "trends_open": ["failed", "TODO"]})
+    page = report_html._trend(runs, ["TODO"], choice)
+    # the unfolded first, in the order of trends_open; then the folded, in the order of trends
+    assert order(page) == ["failed", "m0", "tests", "coverage"]
+    assert 'data-chart="loc"' not in page  # not listed: not shown
+    assert 'data-chart="m0" open>' in page and 'data-chart="failed" open>' in page and 'data-chart="coverage">' in page
+    page = report_html._trend(runs, ["TODO"], choose({"trends": ["failed", "TODO", "loc", "coverage"]}))
+    assert order(page) == ["coverage", "loc", "failed", "m0"]  # the default unfolded ones (coverage, loc) first
+    # only trends_open set: every chart shown, these unfolded
+    page = report_html._trend([_run(1, 60.0, 12000), _run(3, 62.0, 12480)], [], choose({"trends_open": ["tests"]}))
+    assert 'data-chart="tests" open>' in page and 'data-chart="coverage">' in page and 'data-chart="loc">' in page
+    assert report_html._trend([_run(1, 60.0, 12000), _run(3, 62.0, 12480)], [], {"trends": []}) == ""
+    for wrong, why in (({"trends": ["coverag"]}, "no chart named 'coverag'. The charts: coverage, loc,"),
+                       ({"trends_open": "coverage"}, "trends_open must be a list of chart names"),
+                       ({"trend": ["coverage"]}, "has the key(s) trend, which do not exist"),
+                       ({"trends": ["coverage"], "trends_open": ["loc"]}, "trends_open lists 'loc', which trends does not show")):
+        with pytest.raises(typer.Exit):
+            choose(wrong)
+        assert why in capsys.readouterr().out
+    with pytest.raises(typer.Exit):  # a measure named like a chart of jsa
+        codebase.measures_from_config({"report": {"measures": [{"label": "loc", "pattern": "x"}]}})
+
+
+def test_trend_in_the_order_of_the_code_measured():
+    # old commits measured today, newest first: each run is placed at the date of its code
+    history = [_run(20, 70.0, 13000), _run(21, 50.0, 10000, code_date="2025-11-15T09:00:00"),
+               _run(22, 60.0, 11500, code_date="2026-05-10T17:30:00"), {"date": "2026-01-01", "event": "Release 2.0"}]
+    page = report_html._trend(history)
+    loc = page[page.index('data-chart="loc"'):page.index('data-chart="tests"')]
+    assert '<polyline points="48.0,' in loc
+    ys = [float(p.split(",")[1]) for p in loc.split('<polyline points="')[1].split('"')[0].split()]
+    assert ys[0] > ys[1] > ys[2]  # 10,000 then 11,500 then 13,000 lines: going up
+    assert ">2025-11-15 09:00<" in loc and ">2026-10-20 10:00<" in loc  # the x axis: from the oldest code to the newest
+    assert "<title>2025-11-15 09:00 (measured 2026-10-21): 10,000</title>" in loc
+    assert "<title>Release 2.0</title>" in loc  # between the code of November and the code of May
+
+
+def test_date_of_the_code_measured(tmp_path):
+    repo = tmp_path / "addons"
+    repo.mkdir()
+    git = lambda *args, **env: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=repo,
+                                             capture_output=True, text=True, env={**os.environ, **env}, check=True)
+    assert codebase.code_date([repo]) is None  # not in git
+    git("init", "-q")
+    (repo / "a.py").write_text("x = 1\n")
+    git("add", ".")
+    git("commit", "-q", "-m", "old", GIT_COMMITTER_DATE="2025-11-15T09:00:00+00:00", GIT_AUTHOR_DATE="2025-11-15T09:00:00+00:00")
+    expected = datetime(2025, 11, 15, 9, tzinfo=timezone.utc).astimezone().replace(tzinfo=None).isoformat()
+    assert codebase.code_date([repo]) == expected
+    (repo / "a.py").write_text("x = 2\n")
+    assert codebase.code_date([repo]) is None  # uncommitted changes: the date of the run
+
+
+def test_zoomed_axis_for_lines_of_code():
+    assert report_html.zoomed_axis([12000, 12480]) == (12000, 12500, 250)
+    low, high, _ = report_html.zoomed_axis([500, 500])  # a flat line: a narrow band around it
+    assert low <= 500 < high
+    assert report_html.axis_number(12250) == "12.25k" and report_html.axis_number(9950) == "9,950"
+    chart = report_html.line_chart("Lines of code", [("a", 12000), ("b", 12480)], zoom=True)
+    assert ">12k<" in chart and ">12.5k<" in chart and ">0<" not in chart and ">12,480<" in chart
+    assert ">0<" in report_html.line_chart("Failed tests", [("a", 3), ("b", 1)])  # counts start at 0
+
+
+def test_measures_of_config_counted_in_the_code(tmp_path, capsys):
+    addon = make_addon(tmp_path, "my_addon")
+    (addon / "models" / "a.py").write_text("# TODO one\nx = 1  # TODO two\n")
+    (addon / "views.xml").write_text("<!-- TODO three -->")
+    (addon / "tests").mkdir()
+    (addon / "tests" / "test_a.py").write_text("# TODO not counted: tests are not code\n")
+    measures = codebase.measures_from_config({"report": {"measures": [
+        {"label": "TODO", "pattern": r"\bTODO\b"}, {"label": "TODO in python", "pattern": "^# TODO", "files": ["*.py"]}]}})
+    assert codebase.count_measures({"my_addon": addon}, measures) == {"TODO": 3, "TODO in python": 1}
+    assert codebase.count_measures({"my_addon": addon}, []) == {}
+    for wrong, why in (({"label": "x", "pattern": "("}, "not a valid regular expression"),
+                       ({"label": "x", "regex": "a"}, "regex, which do not exist"),
+                       ({"label": "x"}, "needs a label and a pattern"),
+                       ({"label": "x", "pattern": "a", "files": "*.py"}, None)):
+        try:
+            codebase.measures_from_config({"report": {"measures": [wrong]}})
+            assert why is None
+        except typer.Exit:
+            assert why in capsys.readouterr().out
+    with pytest.raises(typer.Exit):
+        codebase.measures_from_config({"report": {"measures": [{"label": "x", "pattern": "a"}, {"label": "x", "pattern": "b"}]}})
 
 
 def test_state_history_and_report_files(tmp_path):
     assert report.load_state(tmp_path) == ({}, None)  # no previous run
     results = {"a": Result(60, tests=5, failed=["T.new"], statements=100, covered=60, files={"models/x.py": "3-5"}), "new": None}
     for _ in range(2):  # two measured runs: the trend appears
-        report.write_reports({"a": 15, "new": 3}, {"a": ["base"], "new": []}, results, tmp_path, run={"mode": "whole", "profile": "17"})
+        report.write_reports({"a": 15, "new": 3}, {"a": ["base"], "new": []}, results, tmp_path,
+                             run={"mode": "whole", "profile": "17"}, measures={"TODO comments": 4})
+    assert all(line["measures"] == {"TODO comments": 4} for line in report.load_history(tmp_path / "history.jsonl"))
     assert sorted(p.name for p in tmp_path.iterdir()) == ["history.jsonl", "report.html", "state.json"]
     state, _ = report.load_state(tmp_path)
     assert state["a"]["failed"] == ["T.new"] and state["new"]["coverage"] is None
@@ -229,7 +360,8 @@ def test_state_history_and_report_files(tmp_path):
     (tmp_path / "history.jsonl").write_text("not json\n" + (tmp_path / "history.jsonl").read_text())
     assert len(report.load_history(tmp_path / "history.jsonl")) == 2  # a line broken by hand is ignored
     html = (tmp_path / "report.html").read_text(encoding="utf-8")
-    for expected in ("Needs attention", "T.new", "models/x.py", "3-5", "Trend of the measured runs", "60%", "Not measured"):
+    for expected in ("Needs attention", "T.new", "models/x.py", "3-5", "Trend of the measured runs", "60%", "Not measured",
+                     '<span class="tname">TODO comments</span>'):
         assert expected in html
 
 

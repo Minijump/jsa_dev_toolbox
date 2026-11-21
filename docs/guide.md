@@ -157,9 +157,40 @@ then the other applications and modules. Useful before moving a database to the 
 
 ![Dependency graph](images/report_graph.png)
 
-- **Trends**: coverage, failed tests and addons not installable, run after run.
+- **Trends**, run after run, one chart under the other: coverage and lines of code open, the others folded (tests,
+  failed tests, addons not installable, addons without tests, addons, enterprise dependencies, your own measures),
+  each titled with its last value. The lines of code have their own scale (a 2% growth would look flat on an axis
+  starting at 0). Each run is placed at the date of the code it measured: the last commit of your addons folders
+  (or the date of the run when they had uncommitted changes). So you can fill the past: check out older commits and
+  run `jsa structure -c` on each, in any order.
+
+**Which charts.** By default every chart is shown (your measures last), coverage and lines of code unfolded. To
+choose, in `config.toml`:
+```toml
+[report]
+trends = ["coverage", "loc", "tests", "TODO comments"]  # the charts shown
+trends_open = ["TODO comments", "coverage"]             # unfolded at first
+```
+The unfolded charts come first, in the order of `trends_open`, then the folded ones in the order of `trends`.
+The charts: `coverage`, `loc` (lines of code), `tests`, `failed`, `not_installable`, `no_tests`, `addons`,
+`enterprise`, and the labels of your measures. Either key can be left out (it keeps its default).
 
 ![Trends](images/report_trend.png)
+
+**Your own measures.** A pattern counted in the code of your addons, drawn as a trend: TODOs going down, a deprecated
+call disappearing during a migration, `sudo()` calls, ... In `config.toml`:
+```toml
+[[report.measures]]
+label = "TODO comments"
+pattern = '\bTODO\b'              # a regular expression; single quotes keep the backslash
+files = ["*.py", "*.js", "*.xml"] # optional: only these files
+```
+It is counted in the files of the lines of code (no tests, translations, migrations) and recorded by each run that
+measures the coverage (`-c`).
+
+**Events.** To see the trends before and after a release, someone joining the team, ..., add a line by hand to
+`codebase_analysis/history.jsonl`: `{"date": "2026-11-01", "event": "Release 2.0"}`. It is drawn as a dashed vertical
+line on every chart, once runs were measured before and after it.
 
 **Measuring the coverage.** `jsa structure -c -p <profile>` installs the addons in temporary databases (dropped
 afterwards), runs their tests under `coverage`, and puts the results in the report. Three ways:
@@ -182,7 +213,8 @@ afterwards), runs their tests under `coverage`, and puts the results in the repo
 - Without `-c`, the report keeps the last measures of the unchanged addons.
 
 **Files** next to the report: `state.json` (the last results, also the cache), `history.jsonl` (one line per measured
-run, for the trends: delete a line to forget a run), `coverage_odoo.log` (the full Odoo log of the last measure).
+run, for the trends: delete a line to forget a run; your events), `coverage_odoo.log` (the full Odoo log of the last
+measure).
 Runs are only compared with runs measured the same way: same Odoo version, and whole or one by one (isolated and
 both), picked above the charts.
 
