@@ -130,11 +130,11 @@ def test_compute_diff_compares_only_measures_taken_the_same_way():
            "b": {"loc": 10, "coverage": 55, "failed": [], "coverage_mode": "both", "odoo": 19},  # one by one, like isolated
            "c": {"loc": 10, "coverage": NOT_INSTALLABLE, "failed": [], "coverage_mode": "whole", "odoo": 19}}  # another Odoo
     diff = report.compute_diff(old, new)
-    assert diff["not_comparable"] == ["a", "c"]
+    assert diff["not_comparable"] == ["a"]  # another Odoo version compares (c), another method does not (a)
     assert diff["metrics_changed"] == [("a", 2, None, 80, 60), ("b", 0, 5, 50, 55)]  # a: its lines only, not its coverage
-    assert diff["newly_failing"] == [] and diff["fixed"] == [("b", ["T.x"])] and diff["could_to_cant"] == []
+    assert diff["newly_failing"] == [] and diff["fixed"] == [("b", ["T.x"])] and diff["could_to_cant"] == ["c"]
     page = report_html._changes(diff, "2026-10-25T10:00:00")
-    assert "Coverage and tests of 2 addons not compared: measured another way" in page and "+2 lines" in page
+    assert "Coverage and tests of 1 addon not compared: measured another way" in page and "+2 lines" in page
     only = report_html._changes({**report.compute_diff({}, {}), "not_comparable": ["a"]}, None)
     assert "Nothing changed" not in only and "Coverage and tests of 1 addon not compared" in only
 
@@ -174,27 +174,31 @@ def test_dot_hides_or_dots_the_duplicate_links():
         assert expected in page
 
 
-def test_one_trend_per_way_of_measuring(tmp_path):
-    assert report.series_of({"mode": "isolated", "odoo": 19}) == report.series_of({"mode": "both", "odoo": 19}) == (19, "one by one")
-    assert report.series_of({"mode": "whole", "odoo": 19}) == (19, "whole")
-    assert report.series_of({"mode": "whole", "profile": "17"}) == (None, "whole")  # recorded before the version was
-    assert report.series_label((None, "whole")) == "Odoo version unknown · whole"
+def test_one_trend_per_way_of_measuring_every_odoo_version_together(tmp_path):
+    assert report.series_of({"mode": "isolated", "odoo": 19}) == report.series_of({"mode": "both", "odoo": 17}) == "one by one"
+    assert report.series_of({"mode": "whole", "odoo": 19}) == report.series_of({"mode": "whole"}) == "whole"
+    assert report.series_label("whole") == "whole" and report.series_label("one by one", 17) == "one by one (isolated, both) · Odoo 17 only"
     run = lambda mode, version, coverage, day: {"date": f"2026-10-{day:02d}T10:00", "mode": mode, "odoo": version,
                                                 "coverage": coverage, "failed": 0, "not_installable": 0}
     history = [run("whole", 17, 50, 1), run("whole", 17, 52, 2), run("whole", 19, 70, 3), run("isolated", 19, 40, 4),
                run("whole", 19, 72, 5), run("both", 19, 41, 6)]
     page = report_html._trend(history)
     options = page[page.index("<select"):page.index("</select>")]
-    # the series of the last run first (shown), each with only its own runs
-    assert options.index("Odoo 19 · one by one (isolated, both) (2 runs)") < options.index("Odoo 17 · whole (2 runs)")
-    assert "Odoo 19 · whole (2 runs)" in options
+    # the method of the last run first (shown), every Odoo version together; each version alone one choice away
+    assert options.index("one by one (isolated, both) (2 runs)") < options.index(">whole (4 runs)")
+    assert "whole · Odoo 17 only (2 runs)" in options and "whole · Odoo 19 only (2 runs)" in options
+    assert "one by one (isolated, both) · Odoo" not in options  # one version only: nothing to split
     shown = page[page.index('data-key="0">'):page.index('data-key="1"')]
     assert "41%" in shown and "72%" not in shown and "hidden" not in shown[:20]
-    assert page.count(" hidden>") == 2
+    whole = page[page.index('data-key="1"'):page.index('data-key="2"')]
+    coverage = whole[:whole.index('data-chart="failed"')]
+    assert coverage.count('class="dot"') == 4  # Odoo 17 and 19 on the same curve
+    assert "<title>Odoo 17 → 19</title>" in coverage and "· Odoo 17: 50%" in coverage  # where the version changes
+    assert page.count(" hidden>") == 3
     assert ".series[hidden]{display:none}" in report_html.CSS  # the charts are display:flex, which beats "hidden"
     assert report_html._trend([run("whole", 19, 70, 1)]) == ""  # one run: no trend yet
     single = report_html._trend([run("whole", 19, 70, 1), run("whole", 19, 71, 2)])
-    assert "<select" not in single and "Odoo 19 · whole" in single
+    assert "<select" not in single and '<p class="meta">whole</p>' in single and "→" not in single
     release = tmp_path / "odoo" / "release.py"
     release.parent.mkdir()
     release.write_text("version_info = (19, 0, 0, FINAL, 0, '')\n")
@@ -208,6 +212,7 @@ def test_tiles_compare_the_measures_with_the_run_measured_the_same_way():
     run = lambda mode, coverage, failed, loc: {"date": "2026-10-25T10:00", "mode": mode, "odoo": 19, "coverage": coverage,
                                                "failed": failed, "not_installable": 0, "no_tests": 0, "addons": 2, "loc": loc}
     history = [run("isolated", 40.0, 2, 100), run("whole", 70.0, 0, 100), run("both", 43.0, 1, 110)]  # the last: this run
+    history[0]["odoo"] = 17  # another Odoo version: compared all the same
     summary = {**history[-1], "tests": 9, "measured": 2, "enterprise": None}
     previous_report = run("whole", 70.0, 0, 100)
     tiles_of = lambda page: page[page.index('<div class="tiles">'):page.index('</div></div>', page.index('Enterprise dependencies'))]
@@ -215,7 +220,7 @@ def test_tiles_compare_the_measures_with_the_run_measured_the_same_way():
                                         {"generated_at": "2026-10-25T10:00:00", "mode": "both", "profile": "19", "odoo": 19}))
     # coverage and failures: against the previous isolated run (same method), not against the whole run just before;
     # the change in a few words, which run it is compared with in its tooltip
-    same_way = '<span title="Compared with the previous run measured the same way: Odoo 19 · one by one (isolated, both)">'
+    same_way = '<span title="Compared with the previous run measured the same way: one by one (isolated, both)">'
     assert f'{same_way}+3.0 pts since last run</span>' in tiles
     assert f'1 failed ({same_way}-1</span>)' in tiles
     assert "-27" not in tiles
@@ -297,7 +302,7 @@ def test_trend_in_the_order_of_the_code_measured():
     ys = [float(p.split(",")[1]) for p in loc.split('<polyline points="')[1].split('"')[0].split()]
     assert ys[0] > ys[1] > ys[2]  # 10,000 then 11,500 then 13,000 lines: going up
     assert ">2025-11-15 09:00<" in loc and ">2026-10-20 10:00<" in loc  # the x axis: from the oldest code to the newest
-    assert "<title>2025-11-15 09:00 (measured 2026-10-21): 10,000</title>" in loc
+    assert "<title>2025-11-15 09:00 · Odoo 19 (measured 2026-10-21): 10,000</title>" in loc
     assert "<title>Release 2.0</title>" in loc  # between the code of November and the code of May
 
 

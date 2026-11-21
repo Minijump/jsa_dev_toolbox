@@ -244,6 +244,8 @@ def _status_html(name: str) -> str:
 
 def _coverage_html(entry: dict) -> str:
     coverage = entry.get('coverage')
+    if coverage == NOT_INSTALLABLE and entry.get('statements'):
+        return '<span class="muted" title="Its tests never ran: counted as 0% in the total">0%</span>'
     if coverage is None or coverage == NOT_INSTALLABLE:
         return '<span class="muted">–</span>'
     if coverage == NO_REPORT:
@@ -396,7 +398,7 @@ def _changes(diff: Optional[dict], old_date: Optional[str]) -> str:
     if diff.get('not_comparable'):
         count = len(diff['not_comparable'])
         body += (f'<p class="meta">Coverage and tests of {count} addon{"s" if count > 1 else ""} not compared: measured another '
-                 'way than in the previous run (another Odoo version, or whole instead of one by one).</p>')
+                 'way than in the previous run (whole instead of one by one, or the reverse).</p>')
     body = body or '<span class="meta">Nothing changed.</span>'
     return f'<section><h2>Changes since the previous run{since}</h2>{body}</section>'
 
@@ -583,18 +585,30 @@ def _trend_section(key: str, title: str, unit: str, is_open: bool, zoom: bool, r
     head += f'<span class="tnow">{number(points[-1][1])}{unit}</span>'
     if len(points) == 1:
         return head + f'<span class="tnote">one run so far ({E(label(points[0][0]))})</span></summary></details>'
-    # the tooltip of a run measured after its code was written (an old commit) gives both dates
-    tip = lambda r: label(r) + (f" (measured {str(r['date'])[:10]})" if r.get('code_date') and
-                                str(r['code_date'])[:10] != str(r.get('date', ''))[:10] else "")
+    # the tooltip gives the Odoo version, and both dates for a run measured after its code was written (an old commit)
+    tip = lambda r: label(r) + (f" · Odoo {r['odoo']}" if r.get('odoo') else "") + (
+        f" (measured {str(r['date'])[:10]})" if r.get('code_date') and str(r['code_date'])[:10] != str(r.get('date', ''))[:10] else "")
     dates = [code_date(r) for r, _ in points]
     chart = line_chart(title, [(label(r), v, tip(r)) for r, v in points], unit, 100 if unit == "%" else None, zoom,
-                       event_positions(dates, events) if all(dates) else [])
+                       event_positions(dates, events + version_changes([r for r, _ in points])) if all(dates) else [])
     return head + '</summary>' + chart + '</details>'
 
 
+def version_changes(runs: list[dict]) -> list[dict]:
+    """An event between two runs on different Odoo versions ('Odoo 17 → 19'), halfway between their dates."""
+    found = []
+    for before, after in zip(runs, runs[1:]):
+        if before.get('odoo') and after.get('odoo') and before['odoo'] != after['odoo']:
+            start, end = code_date(before), code_date(after)
+            if start and end:
+                found.append({'date': (start + (end - start) / 2).isoformat(), 'event': f"Odoo {before['odoo']} → {after['odoo']}"})
+    return found
+
+
 def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict] = None) -> str:
-    """One trend per way of measuring (Odoo version, whole or one by one): runs measured differently do not compare.
-    `measures`: the labels of [[report.measures]]. `choice`: [report] trends (the charts shown: by default all, the
+    """One trend per method (whole, or one by one): runs measured differently do not compare. Every Odoo version on
+    the same curve (a dashed line where it changes); when the runs span several versions, each one alone too, one
+    choice away. `measures`: the labels of [[report.measures]]. `choice`: [report] trends (the charts shown: by default all, the
     measures last) and trends_open (unfolded at first: by default coverage and lines of code). The unfolded charts
     come first in the order of trends_open, then the others in the order of trends."""
     choice = choice or {}
@@ -607,20 +621,27 @@ def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict]
         return ""
     runs, events = report.runs_and_events(history)
     measured = [r for r in runs if r.get('coverage') is not None]
-    series = {}
+    series = {}  # (method, None: every Odoo version | one version): its runs
     for run in measured:
-        series.setdefault(report.series_of(run), []).append(run)
+        series.setdefault((report.series_of(run), None), []).append(run)
+    for method, _ in list(series):
+        versions = sorted({r.get('odoo') for r in series[(method, None)] if r.get('odoo')})
+        if len(versions) > 1:
+            for version in versions:
+                series[(method, version)] = [r for r in series[(method, None)] if r.get('odoo') == version]
     for lines in series.values():  # in the order of their code, whatever the order they were measured in
         lines.sort(key=lambda r: code_date(r) or datetime.min)
     drawn = {key: lines[-30:] for key, lines in series.items() if len(lines) >= 2}
     if not drawn:
         return ""
-    latest = report.series_of(measured[-1])
-    shown = latest if latest in drawn else max(drawn, key=lambda key: measured.index(drawn[key][-1]))
-    keys = sorted(drawn, key=lambda key: (key != shown, report.series_label(key)))
+    latest = (report.series_of(measured[-1]), None)
+    shown = latest if latest in drawn else max((key for key in drawn if key[1] is None), default=next(iter(drawn)),
+                                               key=lambda key: measured.index(drawn[key][-1]))
+    keys = sorted(drawn, key=lambda key: (key != shown, key[0], key[1] or 0))
+    label = lambda key: report.series_label(*key)
     select = ('<div class="controls"><select id="series" aria-label="Which runs">' + "".join(
-        f'<option value="{i}">{E(report.series_label(key))} ({len(series[key])} runs)</option>' for i, key in enumerate(keys))
-        + '</select></div>') if len(keys) > 1 else f'<p class="meta">{E(report.series_label(shown))}</p>'
+        f'<option value="{i}">{E(label(key))} ({len(series[key])} runs)</option>' for i, key in enumerate(keys))
+        + '</select></div>') if len(keys) > 1 else f'<p class="meta">{E(label(shown))}</p>'
     builtin = {key: (title, unit, zoom) for key, title, unit, zoom in TREND_CHARTS}
 
     def section(name: str, lines: list[dict]) -> str:
@@ -637,7 +658,8 @@ def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict]
                      for i, key in enumerate(keys))
     return ('<section id="trends"><h2>Trend of the measured runs</h2>' + select + blocks
             + '<p class="meta" style="margin:8px 0 0">One point per run that measured the coverage, with the runs measured the '
-            'same way only (same Odoo version; whole, or one by one), at the date of the code measured: its last commit '
+            'same way only (whole, or one by one), every Odoo version together (a dashed line where it changes), at the date '
+            'of the code measured: its last commit '
             '(the date of the run when it had uncommitted changes), so measuring old commits fills the past. '
             'Click a title to fold or unfold its chart. To forget a '
             'run, delete its line in <code>history.jsonl</code>; to mark an event (a release, someone joining the team), add '

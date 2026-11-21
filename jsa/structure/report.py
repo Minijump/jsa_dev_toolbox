@@ -103,9 +103,8 @@ def enterprise_dependencies(state: dict) -> dict[str, dict[str, list[str]]]:
 
 
 def measured_the_same_way(before: dict, after: dict) -> bool:
-    """Whether two measures of an addon compare: same Odoo version and method (see series_of)."""
-    return series_of({'odoo': before.get('odoo'), 'mode': before.get('coverage_mode')}) == \
-        series_of({'odoo': after.get('odoo'), 'mode': after.get('coverage_mode')})
+    """Whether two measures of an addon compare: same method, whatever the Odoo version (see series_of)."""
+    return series_of({'mode': before.get('coverage_mode')}) == series_of({'mode': after.get('coverage_mode')})
 
 
 def compute_diff(old: dict, new: dict) -> dict:
@@ -186,17 +185,16 @@ def runs_and_events(history: list[dict]) -> tuple[list[dict], list[dict]]:
     return runs, events
 
 
-def series_of(run: dict) -> tuple[Optional[int], str]:
-    """(Odoo version, method) of a measured run: it is compared with the runs measured the same way only.
-    'isolated' and 'both' share their method: both take the coverage of each addon alone. A run recorded without its
-    version (before it was recorded) has None: "version unknown"."""
-    return run.get('odoo'), 'whole' if run.get('mode') == 'whole' else 'one by one'
+def series_of(run: dict) -> str:
+    """The method of a measured run: it is compared with the runs measured the same way only, whatever their Odoo
+    version (the user's choice, 2026-11-21: the coverage on Odoo 17 and on 19 compare). 'isolated' and 'both' share
+    their method: both take the coverage of each addon alone."""
+    return 'whole' if run.get('mode') == 'whole' else 'one by one'
 
 
-def series_label(series: tuple[Optional[int], str]) -> str:
-    version, method = series
-    return (f"Odoo {version}" if version else "Odoo version unknown") + " · " + (
-        "whole" if method == 'whole' else "one by one (isolated, both)")
+def series_label(method: str, version: Optional[int] = None) -> str:
+    """'whole', 'one by one (isolated, both)'; with a version: the runs on that Odoo version only."""
+    return ("whole" if method == 'whole' else "one by one (isolated, both)") + (f" · Odoo {version} only" if version else "")
 
 
 def append_history(history_file: Path, run: dict):

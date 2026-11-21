@@ -163,8 +163,17 @@ then the other applications and modules. Useful before moving a database to the 
   failed tests, addons not installable, addons without tests, addons, enterprise dependencies, your own measures),
   each titled with its last value. The lines of code have their own scale (a 2% growth would look flat on an axis
   starting at 0). Each run is placed at the date of the code it measured: the last commit of your addons folders
-  (or the date of the run when they had uncommitted changes). So you can fill the past: check out older commits and
-  run `jsa structure -c` on each, in any order.
+  (or the date of the run when they had uncommitted changes). So you can fill the past: `jsa backfill` (below).
+
+**Filling the past.** List old commits of your addons in `plugins/backfill/backfill.toml` (copy
+`backfill.toml.sample`), with your events, then run `jsa backfill` (`--dry-run` first: it shows each commit with its
+Odoo version and profile). For each commit, in a temporary checkout (yours is not touched): the Odoo version is read
+in the manifests (`17.0.1.0.0`: Odoo 17), the profile running that version is used (or the one given in `[profiles]`
+of the file), and the addons are measured like `jsa structure -c -m whole`, then `-m isolated` (`modes` of the file
+to keep one). The runs go in the trends at the date of the commit; the reports of each commit stay in
+`codebase_analysis/backfill/<commit>/<mode>/`. A measure already taken is skipped, so a backfill that stopped goes on
+where it was. Each commit is two full measures: count hours for many commits. Needs all the `addons_roots` in one
+git repository.
 
 **Which charts.** By default every chart is shown (your measures last), coverage and lines of code unfolded. To
 choose, in `config.toml`:
@@ -203,7 +212,11 @@ afterwards), runs their tests under `coverage`, and puts the results in the repo
 | `-m isolated` | each addon on a database holding only its dependencies (built from snapshots of the dependencies already installed) | undeclared dependencies |
 | `-m both` | the coverage of `isolated`, then all addons tested together without coverage | both; a test failing only with all the addons is marked "(with all the addons)" |
 
-- An addon that fails to install is left out with the addons depending on it, and the others are tried again.
+- An addon that fails to install is left out with the addons depending on it, and the others are tried again. One
+  needing a module found in no addons path is left out before the install.
+- An addon that does not install (or is marked not installable) counts as 0% covered in the total: its tests never
+  ran. Its lines and branches are counted as coverage would have measured them, so the coverage goes up when it
+  becomes installable, never down.
 - `--standard-tests` (whole, both): also runs the tests of the standard modules your addons need, with your addons
   installed, like odoo.sh does. Long (`base` alone has about 1000 tests).
 - Demo data is always installed: tests written for a database with demo data keep passing on Odoo 19.
@@ -217,8 +230,9 @@ afterwards), runs their tests under `coverage`, and puts the results in the repo
 **Files** next to the report: `state.json` (the last results, also the cache), `history.jsonl` (one line per measured
 run, for the trends: delete a line to forget a run; your events), `coverage_odoo.log` (the full Odoo log of the last
 measure).
-Runs are only compared with runs measured the same way: same Odoo version, and whole or one by one (isolated and
-both), picked above the charts.
+Runs are only compared with runs measured the same way: whole, or one by one (isolated and both), picked above the
+charts. Every Odoo version is on the same curve, so the coverage on Odoo 17 and on 19 compare; a dashed line marks
+where the version changes, and when there are several, each version alone is one choice away.
 
 ## Finding the commit that broke a test
 
@@ -360,9 +374,12 @@ def register(app: typer.Typer):
 - A plugin's command can be a step of `restore`: `command = "users"` in a `[[restore.extra_steps]]`.
 - A broken plugin is reported and skipped: jsa's own commands keep working. Files starting with `_` are not plugins.
 
-The example: `plugins/quote_pdfs/` puts back the PDF files of the quotation headers and footers (Odoo 18+, quotation
-builder), lost with a dump without filestore: `jsa quote-pdfs <db> -p <profile>` (`--list` shows the ids). Its
-`documents.toml` (id = file, see `documents.toml.sample`) and your PDFs go in that folder, ignored by git.
+The examples:
+- `plugins/quote_pdfs/` puts back the PDF files of the quotation headers and footers (Odoo 18+, quotation builder),
+  lost with a dump without filestore: `jsa quote-pdfs <db> -p <profile>` (`--list` shows the ids). Its
+  `documents.toml` (id = file, see `documents.toml.sample`) and your PDFs go in that folder, ignored by git.
+- `plugins/backfill/` measures old commits for the trends of the report: `jsa backfill` (see "Filling the past"
+  above), its `backfill.toml` in that folder, ignored by git.
 
 ## Odoo versions
 

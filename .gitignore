@@ -9,6 +9,11 @@ plugins/*
 plugins/quote_pdfs/*
 !plugins/quote_pdfs/__init__.py
 !plugins/quote_pdfs/*.sample
+# the backfill plugin: its code is part of the toolbox, its backfill.toml is yours
+!plugins/backfill/
+plugins/backfill/*
+!plugins/backfill/__init__.py
+!plugins/backfill/*.sample
 uitests/*
 !uitests/*.sample
 

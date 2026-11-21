@@ -33,7 +33,8 @@ NO_REPORT = -2
 # by its tests, so it would only lower the coverage. Tests themselves and manifests neither.
 OMITTED = ("*/__manifest__.py", "*/__init__.py", "*/tests/*", "*/hooks.py", "*/hook.py", "*/hooks/*",
            "*/migrations/*", "*/upgrades/*")
-RULES = 3  # version of what is measured: the measures of another version are not reused (3: demo data on Odoo 19+)
+RULES = 4  # version of what is measured: the measures of another version are not reused (3: demo data on Odoo 19+;
+# 4: an addon that does not install counts as 0% covered, see never_run)
 TOGETHER = " (with all the addons)"  # mode 'both': a test that fails only when all the addons are installed
 
 
@@ -100,6 +101,22 @@ def module_coverage(coverage_json: dict, addons: dict[str, Path]) -> dict[str, d
         if module['statements']:
             module['coverage'] = display_percent(module['covered'], module['statements'])
     return out
+
+
+def never_run(addons: dict[str, Path], profile: dict) -> dict[str, int]:
+    """Lines + branches of addons whose tests never ran (not installable): they count as not covered (0%), else the
+    coverage would go down when they become installable. coverage.py reports the files of --source that nothing ran
+    with what it would have measured (same --branch and --omit as the test runs): it is given an empty script."""
+    with tempfile.TemporaryDirectory(prefix="jsa_never_run_") as tmp:
+        (Path(tmp) / "nothing.py").write_text("")
+        coverage = lambda *args: subprocess.run([profile['python'], "-m", "coverage", *args], cwd=tmp,
+                                                env=config.odoo_env(profile), capture_output=True)
+        coverage("run", "--branch", "--source", ",".join(str(p) for p in addons.values()), "--omit", ",".join(OMITTED),
+                 "nothing.py")
+        coverage("json", "-q", "-o", "coverage.json")
+        out = Path(tmp) / "coverage.json"
+        data = json.loads(out.read_text(encoding="utf-8")) if out.exists() else {}
+    return {name: measured['statements'] for name, measured in module_coverage(data, addons).items()}
 
 
 class OdooRunner:
@@ -169,7 +186,14 @@ def run_whole(addons: dict[str, Path], graph: DependencyGraph, runner: OdooRunne
               standard_tests: bool = False) -> tuple[dict[str, Result], Optional[dict]]:
     """Results of the addons, and those of the tests of the standard modules ({module: {tests, failed}}, None when
     they were not run)."""
-    results = {}
+    # an addon needing a module found in no addons path (directly or through another addon) cannot install: left out
+    # before, else the install of everything fails with no culprit in the log
+    missing = {name: sorted(graph.closure([name]) - set(graph.depends)) for name in addons}
+    results = {name: Result(NOT_INSTALLABLE, note=f"needs {', '.join(deps)}, in no addons path")
+               for name, deps in missing.items() if deps}
+    addons = {name: path for name, path in addons.items() if name not in results}
+    if not addons:
+        return results, None
     standard = sorted(graph.closure(addons) - graph.custom)
     base = None
     if standard_tests:  # no snapshot: the standard modules have to be installed in the run that tests them
@@ -179,8 +203,8 @@ def run_whole(addons: dict[str, Path], graph: DependencyGraph, runner: OdooRunne
         base = runner.new_db("standard")
         info = runner.run(base, standard, "standard dependencies")
         if info.failed:
-            return {name: Result(NOT_INSTALLABLE, note=f"standard dependencies failed to install ({info.culprit})")
-                    for name in addons}, None
+            return {**results, **{name: Result(NOT_INSTALLABLE, note=f"standard dependencies failed to install ({info.culprit})")
+                                  for name in addons}}, None
 
     tried = {}  # the database of the last attempt
 

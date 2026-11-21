@@ -123,6 +123,19 @@ def test_whole_retries_without_broken_addon():
     assert tests == [("c_base", "c_mail", "c_mail_child"), ("c_base",)]
 
 
+def test_whole_leaves_out_before_the_install_an_addon_needing_a_module_found_nowhere():
+    graph = DependencyGraph({**GRAPH.depends, "c_lost": ["no_such_module"], "c_lost_child": ["c_lost"]},
+                            custom=GRAPH.custom | {"c_lost", "c_lost_child"})
+    addons = {m: Path(m) for m in ("c_base", "c_lost", "c_lost_child")}
+    runner = FakeRunner()
+    results, _ = coverage.run_whole(addons, graph, runner)
+    assert results["c_lost"].note == results["c_lost_child"].note == "needs no_such_module, in no addons path"
+    assert results["c_base"].coverage == NO_REPORT  # measured: the others are not stopped by it
+    assert [install for _, install, _ in runner.installs] == [("base",), ("c_base",)]  # never tried to install it
+    lost_only = {m: Path(m) for m in ("c_lost",)}
+    assert coverage.run_whole(lost_only, graph, FakeRunner())[0]["c_lost"].coverage == NOT_INSTALLABLE
+
+
 def test_whole_with_the_tests_of_the_standard_modules():
     addons = {m: Path(m) for m in ("c_base", "c_mail")}
     runner = FakeRunner(failing={"mail": ["TestMail.test_send"], "c_mail": ["TestMine.test_x"]})

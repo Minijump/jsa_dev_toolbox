@@ -3,7 +3,7 @@ import fnmatch
 import hashlib
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -134,11 +134,12 @@ def count_measures(addons: dict[str, Path], measures: list[Measure]) -> dict[str
 def code_date(roots: list[Path]) -> Optional[str]:
     """When the measured code was written: the last commit changing the addons folders, so that measuring an old
     commit places it in the past of the trends. None (the run is placed at its own date) when a folder is not in git
-    or has uncommitted changes."""
+    or has uncommitted changes (of its tracked files)."""
     dates = []
     for root in roots:
         try:
-            status = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--", "."],
+            # changes of the tracked files only: Python's __pycache__ is not a change of the code
+            status = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no", "--", "."],
                                     capture_output=True, text=True, timeout=60)
             log = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%ct", "--", "."],
                                  capture_output=True, text=True, timeout=60)
@@ -208,17 +209,36 @@ def structure(
         if not profile:
             typer.echo("❌ --profile/-p is required when --coverage/-c is enabled.")
             raise typer.Exit(code=1)
-        coverage_profile = config.load_profile(profile, conf)
-        found = subprocess.run([coverage_profile['python'], "-c", "import coverage"], capture_output=True)
-        if found.returncode != 0:
-            typer.echo(f"❌ 'coverage' is not installed in the python of profile '{profile}' ({coverage_profile['python']}): "
-                       f"install it there with: {coverage_profile['python']} -m pip install coverage")
-            raise typer.Exit(code=1)
+        coverage_profile = coverage_profile_of(profile, conf)
     if standard_tests and (not coverage_enabled or mode == Mode.isolated):
         typer.echo("❌ --standard-tests needs --coverage/-c, in mode whole or both.")
         raise typer.Exit(code=1)
-    measure_all = measure_all or standard_tests  # a full run is what is asked for
+    analyse(conf, roots, config.ANALYSIS_DIR, profile, coverage_profile, mode,
+            measure_all or standard_tests, standard_tests, measures, trends)  # --standard-tests: a full run is asked for
+    if open_it:
+        open_report()
+    else:
+        typer.echo("   Open it with: jsa report")
 
+
+def coverage_profile_of(name: str, conf: dict) -> dict:
+    """The profile that runs the tests under coverage. Stops when 'coverage' is not installed in its python."""
+    profile = config.load_profile(name, conf)
+    found = subprocess.run([profile['python'], "-c", "import coverage"], capture_output=True)
+    if found.returncode != 0:
+        typer.echo(f"❌ 'coverage' is not installed in the python of profile '{name}' ({profile['python']}): "
+                   f"install it there with: {profile['python']} -m pip install coverage")
+        raise typer.Exit(code=1)
+    return profile
+
+
+def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str] = None,
+            coverage_profile: Optional[dict] = None, mode: Mode = Mode.whole, measure_all: bool = False,
+            standard_tests: bool = False, measures: list[Measure] = (), trends: Optional[dict] = None) -> Optional[dict]:
+    """What 'jsa structure' does: the report of the addons of `roots`, written in `out_dir` (state.json, history.jsonl,
+    report.html), with their tests run under coverage when `coverage_profile` (named `profile`) is given.
+    Returns the run added to the history, None when nothing was measured."""
+    written = code_date(roots)  # before Odoo runs
     found = find_addons(roots)
     manifests = read_manifests(found)
     addons = {a.name: a for a in found if a.name in manifests}  # a manifest that cannot be read: left out, said
@@ -228,7 +248,7 @@ def structure(
     graph = DependencyGraph({**std_depends, **dependencies}, custom=addons)
     prints = fingerprints(addons, graph)
 
-    previous, _ = report.load_state(config.ANALYSIS_DIR)
+    previous, _ = report.load_state(out_dir)
     state_extra = {name: {'fingerprint': prints[name], 'schema': report.SCHEMA} for name in addons}
     results: dict[str, Optional[coverage.Result]] = {}
     run = None  # set when addons are measured now
@@ -263,7 +283,7 @@ def structure(
             typer.echo(f"♻️ {len(keep)} unchanged addon(s) keep their previous measure (use --all to measure everything)")
         to_measure = {name: path for name, path in installable.items() if name not in keep}
         if to_measure:
-            log_file = config.ANALYSIS_DIR / "coverage_odoo.log"
+            log_file = out_dir / "coverage_odoo.log"
             typer.echo(f"📊 Measuring the coverage of {len(to_measure)} addon(s), mode '{mode.value}' (Odoo log: {log_file})")
             measured, standard = coverage.measure(to_measure, graph, coverage_profile, Mode.isolated.value if mode == Mode.both
                                                   else mode.value, log_file, standard_tests=standard_tests)
@@ -276,12 +296,16 @@ def structure(
                                                    measure_coverage=False, standard_tests=standard_tests, append=True)
                 results.update(coverage.merge_together(alone, found))
             run = {'mode': mode.value, 'profile': profile, 'odoo': odoo_version}
-            written = code_date(roots)
             if written:
                 run['code_date'] = written
         problems = {name: r for name, r in results.items() if r.coverage == coverage.NOT_INSTALLABLE or r.failures}
         for name, r in sorted(problems.items()):
             typer.echo(f"⚠️ {name}: {coverage.describe(r)}")
+        # their tests never ran: 0% covered, weighed with what coverage would have measured in them
+        unweighed = {name: addons[name] for name, r in results.items() if r.coverage == coverage.NOT_INSTALLABLE and not r.statements}
+        if unweighed:
+            for name, statements in coverage.never_run(unweighed, coverage_profile).items():
+                results[name] = replace(results[name], statements=statements, covered=0)
 
     # direct dependencies on Odoo enterprise (None: not checked). Added last: not part of the cache key above
     enterprise = enterprise_modules(conf)
@@ -294,12 +318,9 @@ def structure(
         failed = sum(len(r['failed']) for r in standard.values())
         typer.echo(f"{'⚠️' if failed else '✅'} Standard modules: {sum(r['tests'] for r in standard.values())} test(s) "
                    f"in {len(standard)} module(s), {failed} failed")
-    report.write_reports(loc, dependencies, results, config.ANALYSIS_DIR, state_extra, run, standard,
+    report.write_reports(loc, dependencies, results, out_dir, state_extra, run, standard,
                          count_measures(addons, measures), trends)
-    if open_it:
-        open_report()
-    else:
-        typer.echo("   Open it with: jsa report")
+    return run
 
 
 def open_report():
