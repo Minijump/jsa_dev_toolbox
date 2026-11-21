@@ -273,35 +273,41 @@ def _tip(entry: dict) -> str:
     return ", ".join(parts + [f"{entry.get('loc', 0):,} lines"])
 
 
-def _delta(new, old, unit: str = "", decimals: int = 0, since: str = "previous run") -> str:
+def _delta(new, old, unit: str = "", decimals: int = 0, compared: str = "the previous report", short: bool = False) -> str:
+    """'+300 since last run' ('+1' when short), the exact comparison in its tooltip; '' when nothing changed."""
     if new is None or old is None or new == old:
         return ""
-    return f" ({new - old:+,.{decimals}f}{unit} since {since})"
+    text = f"{new - old:+,.{decimals}f}{unit}" + ("" if short else " since last run")
+    return f'<span title="Compared with {E(compared)}">{text}</span>'
 
 
 def _tiles(summary: dict, old: Optional[dict], previous: Optional[dict] = None, series: Optional[tuple] = None) -> str:
     """`old`: the summary of the previous report, for what does not depend on how the tests were run (addons, lines
     of code). `previous`: the previous run measured the same way as this one (`series`), for the measures: none when
-    this report did not measure anything, or when nothing was measured that way before."""
+    this report did not measure anything, or when nothing was measured that way before.
+    Each tile: a label, the value, at most two short lines (the change since the last run, a short note)."""
     old, previous = old or {}, previous or {}
-    since = f"the previous run, {report.series_label(series)}" if series else ""
-    measure = lambda key, unit="", decimals=0: _delta(summary[key], previous.get(key), unit, decimals, since)
+    compared = f"the previous run measured the same way: {report.series_label(series)}" if series else ""
+    measure = lambda key, unit="", decimals=0, short=False: _delta(summary[key], previous.get(key), unit, decimals, compared, short)
+    report_delta = lambda key: _delta(summary[key], old.get(key))
+    with_change = lambda text, change: text + (f" ({change})" if change else "")
     coverage = f"{summary['coverage']:.0f}%" if summary['coverage'] is not None else "–"
     passed = summary['tests'] - summary['failed']
+    enterprise = summary.get('enterprise')
     tiles = [
-        ("Addons", f"{summary['addons']}", f"{summary['measured']} measured" + _delta(summary['addons'], old.get('addons'))),
-        ("Lines of code", f"{summary['loc']:,}", "without tests, translations, migrations" + _delta(summary['loc'], old.get('loc'))),
-        ("Coverage", coverage, "of the measured code, lines + branches" + measure('coverage', " pts", 1)),
-        ("Tests passed", f"{passed:,} / {summary['tests']:,}" if summary['tests'] else "–", f"{summary['failed']} failed" + measure('failed')),
-        ("Not installable", f"{summary['not_installable']}", "addons that could not be installed" + measure('not_installable')),
-        ("Without tests", f"{summary['no_tests']}", "installed addons with no test" + measure('no_tests')),
-        ("Enterprise dependencies", "–" if summary.get('enterprise') is None else f"{summary['enterprise']}",
-         "no enterprise folder in the profiles of config.toml" if summary.get('enterprise') is None else
-         "addons depending directly on Odoo enterprise" + _delta(summary['enterprise'], old.get('enterprise'))),
+        ("Addons", f"{summary['addons']}", [report_delta('addons')]),
+        ("Lines of code", f"{summary['loc']:,}", [report_delta('loc'), "excl. tests, po, migrations"]),
+        ("Coverage", coverage, [measure('coverage', " pts", 1), "branch coverage"]),
+        ("Tests passed", f"{passed:,} / {summary['tests']:,}" if summary['tests'] else "–",
+         [with_change(f"{summary['failed']} failed", measure('failed', short=True))]),
+        ("Not installable", f"{summary['not_installable']}", [measure('not_installable')]),
+        ("Enterprise dependencies", "–" if enterprise is None else f"{enterprise}",
+         ["no enterprise folder in config.toml"] if enterprise is None else [report_delta('enterprise'), "addons using it directly"]),
     ]
     return '<div class="tiles">' + "".join(
-        f'<div class="tile"><div class="label">{label}</div><div class="value">{value}</div><div class="sub">{sub}</div></div>'
-        for label, value, sub in tiles) + '</div>'
+        f'<div class="tile"><div class="label">{label}</div><div class="value">{value}</div>'
+        + "".join(f'<div class="sub">{line}</div>' for line in lines if line) + '</div>'
+        for label, value, lines in tiles) + '</div>'
 
 
 def _attention(state: dict, standard: Optional[dict] = None) -> str:

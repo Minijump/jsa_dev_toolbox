@@ -210,18 +210,23 @@ def test_tiles_compare_the_measures_with_the_run_measured_the_same_way():
     history = [run("isolated", 40.0, 2, 100), run("whole", 70.0, 0, 100), run("both", 43.0, 1, 110)]  # the last: this run
     summary = {**history[-1], "tests": 9, "measured": 2, "enterprise": None}
     previous_report = run("whole", 70.0, 0, 100)
-    page = report_html.render({}, summary, previous_report, None, None, history, {},
-                              {"generated_at": "2026-10-25T10:00:00", "mode": "both", "profile": "19", "odoo": 19})
-    tiles = page[page.index('<div class="tiles">'):page.index('</div></div></div>', page.index('Without tests'))]
-    # coverage and failures: against the previous isolated run (same method), not against the whole run just before
-    assert "(+3.0 pts since the previous run, Odoo 19 · one by one (isolated, both))" in tiles
-    assert "(-1 since the previous run, Odoo 19 · one by one (isolated, both))" in tiles
+    tiles_of = lambda page: page[page.index('<div class="tiles">'):page.index('</div></div>', page.index('Enterprise dependencies'))]
+    tiles = tiles_of(report_html.render({}, summary, previous_report, None, None, history, {},
+                                        {"generated_at": "2026-10-25T10:00:00", "mode": "both", "profile": "19", "odoo": 19}))
+    # coverage and failures: against the previous isolated run (same method), not against the whole run just before;
+    # the change in a few words, which run it is compared with in its tooltip
+    same_way = '<span title="Compared with the previous run measured the same way: Odoo 19 · one by one (isolated, both)">'
+    assert f'{same_way}+3.0 pts since last run</span>' in tiles
+    assert f'1 failed ({same_way}-1</span>)' in tiles
     assert "-27" not in tiles
-    assert "(+10 since previous run)" in tiles  # lines of code: against the previous report, whatever its method
+    assert '<span title="Compared with the previous report">+10 since last run</span>' in tiles  # lines of code
+    assert tiles.count('class="tile"') == 6  # one row (no tile for the addons without tests: a trend chart has them)
+    assert "without tests" not in tiles and "branch coverage" in tiles
+    # at most two lines under each value
+    assert all(tile.count('class="sub"') <= 2 for tile in tiles.split('class="tile"'))
     # a report that measured nothing compares no measure
-    page = report_html.render({}, summary, previous_report, None, None, history, {}, {"generated_at": "2026-10-25T10:00:00"})
-    tiles = page[page.index('<div class="tiles">'):page.index('</div></div></div>', page.index('Without tests'))]
-    assert "pts since" not in tiles and "(+10 since previous run)" in tiles
+    tiles = tiles_of(report_html.render({}, summary, previous_report, None, None, history, {}, {"generated_at": "2026-10-25T10:00:00"}))
+    assert "pts since" not in tiles and "+10 since last run" in tiles
 
 
 def _run(day, coverage, loc, todo=None, **more):

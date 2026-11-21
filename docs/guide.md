@@ -142,8 +142,10 @@ then the other applications and modules. Useful before moving a database to the 
 
 ![Overview of the report](images/report_overview.png)
 
-- **Tiles**: addons, lines of code (without tests, translations and migrations), coverage, tests, addons that cannot
-  be installed, addons without tests, dependencies on Odoo enterprise; with their change since the previous run.
+- **Tiles**: addons, lines of code (without tests, translations and migrations), coverage (branch coverage: each
+  line, and each direction of each `if`), tests, addons that cannot be installed, dependencies on Odoo enterprise;
+  with their change since the
+  last run (its tooltip says which run: the measures compare with the last run measured the same way).
 - **Needs attention**, **changes since the previous run**, the **dependencies on Odoo enterprise** (direct, and through
   another custom addon).
 - **A table of the addons**, sortable and filterable; a click opens the failed tests, the lines not covered, the
