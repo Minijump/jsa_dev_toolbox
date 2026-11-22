@@ -122,8 +122,10 @@ def never_run(addons: dict[str, Path], profile: dict) -> dict[str, int]:
 class OdooRunner:
     """Runs odoo-bin of a profile on temporary databases whose filestores live in a temporary data_dir."""
 
-    def __init__(self, profile: dict, work_dir: Path, log_file: Path, append: bool = False):
+    def __init__(self, profile: dict, work_dir: Path, log_file: Path, append: bool = False,
+                 time_limit: Optional[float] = None):
         self.profile, self.work_dir, self.log_file = profile, work_dir, log_file
+        self.time_limit = time_limit  # minutes a test or a setUpClass may take (see odoo.install)
         self.data_dir = work_dir / "data"
         self.prefix = f"{profile['db_prefix']}_{uuid.uuid4().hex[:6]}"
         self.databases = []
@@ -165,7 +167,7 @@ class OdooRunner:
                                "--omit", ",".join(OMITTED)]
             odoo_args = ["--test-enable", "--test-tags", ",".join(f"/{m}" for m in test)]
         return odoo.install(self.profile, db, install, self.data_dir, self.log_file, label, cwd=self.work_dir,
-                            python_args=python_args, odoo_args=self.demo_args + odoo_args)
+                            python_args=python_args, odoo_args=self.demo_args + odoo_args, time_limit=self.time_limit)
 
     def coverage_json(self) -> dict:
         out = self.work_dir / "coverage.json"
@@ -218,8 +220,7 @@ def run_whole(addons: dict[str, Path], graph: DependencyGraph, runner: OdooRunne
         return info
 
     info, left_out = odoo.install_leaving_out(addons, graph, attempt)
-    results.update({m: Result(NOT_INSTALLABLE, note="install failed" if m == culprit else f"depends on {culprit}")
-                    for m, culprit in left_out.items()})
+    results.update({m: Result(NOT_INSTALLABLE, note=why) for m, why in left_out.items()})
     kept, standard_results = {name: path for name, path in addons.items() if name not in left_out}, None
     if info and info.failed:
         results.update({m: Result(NOT_INSTALLABLE, note=f"install failed ({info.culprit or 'see the log'})") for m in kept})
@@ -252,7 +253,8 @@ def run_isolated(addons: dict[str, Path], graph: DependencyGraph, runner: OdooRu
         else:
             db = runner.new_db(f"test{i}", template=snapshots[deps])
             info = runner.run(db, [module], f"{label}: tests", test=[module], sources=[addons[module]])
-            results[module] = (Result(NOT_INSTALLABLE, note="install failed") if info.failed
+            results[module] = (Result(NOT_INSTALLABLE, note="Odoo stopped answering during its tests" if info.timed_out
+                                      else "install failed") if info.failed
                                else _results(runner, db, info, {module: addons[module]})[module])
             runner.drop(db)
         typer.echo(f"   {label}: {describe(results[module])}")
@@ -294,14 +296,16 @@ def describe(result: Result) -> str:
 
 
 def measure(addons: dict[str, Path], graph: DependencyGraph, profile: dict, mode: str, log_file: Path, *,
-            measure_coverage: bool = True, standard_tests: bool = False, append: bool = False) -> tuple[dict[str, Result], Optional[dict]]:
+            measure_coverage: bool = True, standard_tests: bool = False, append: bool = False,
+            time_limit: Optional[float] = None) -> tuple[dict[str, Result], Optional[dict]]:
     """Results of the given (installable) addons in mode 'whole' or 'isolated' ('both' is the two: see
     merge_together), and those of the tests of the standard modules (whole only; None when not run).
-    Temporary databases and filestores are always cleaned up. `append`: add to the log of a previous measure."""
+    Temporary databases and filestores are always cleaned up. `append`: add to the log of a previous measure.
+    `time_limit`: minutes a test, or the setUpClass of a test class, may take (see odoo.install)."""
     if not addons:
         return {}, None
     with tempfile.TemporaryDirectory(prefix="jsa_coverage_") as tmp:
-        runner = OdooRunner(profile, Path(tmp), log_file, append)
+        runner = OdooRunner(profile, Path(tmp), log_file, append, time_limit)
         try:
             if mode == "whole":
                 return run_whole(addons, graph, runner, measure_coverage, standard_tests)

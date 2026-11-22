@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from jsa.core import odoo
 from jsa.core.addons import DependencyGraph
 from jsa.core.odoo import LogInfo
 from jsa.structure import coverage
@@ -35,6 +36,32 @@ def test_log_info():
     assert info.failed_tests == {"c_mail": ["TestX.test_a", "TestX.test_b"]}
     assert info.tests["c_mail"] == 3
     assert info.failed and info.culprit == "c_broken"
+
+
+def test_a_class_whose_setup_failed_and_odoo_stopped_answering():
+    info = LogInfo()
+    for line in [  # as Odoo 17 and 19 log them (the setUpClass by its test suite)
+        "INFO db odoo.addons.c_mail.tests.test_x: Starting TestFine.test_a ...",
+        "ERROR db odoo.tests.suite: ERROR: setUpClass (odoo.addons.c_mail.tests.test_hang.TestAHangingSetup)",
+        "ERROR db odoo.tests.suite: ERROR: tearDownClass (odoo.addons.c_sale.tests.test_y.TestY)",
+        "INFO db odoo.addons.c_sale.tests.test_y: Starting TestY.test_b ...",
+    ]:
+        info.feed(line)
+    assert info.failed_tests == {"c_mail": ["TestAHangingSetup.setUpClass"], "c_sale": ["TestY.tearDownClass"]}
+    assert not info.failed and info.culprit is None and info.testing == "c_sale"
+    info.timed_out = True  # killed: its log stayed silent
+    assert info.failed and info.culprit == "c_sale"  # the module being tested is left out, the others retried
+    left = []
+
+    def attempt(modules):
+        left.append(list(modules))
+        return info if len(left) == 1 else LogInfo()
+
+    graph = DependencyGraph({"base": [], "c_mail": ["base"], "c_sale": ["base"], "c_sale_child": ["c_sale"]},
+                            custom={"c_mail", "c_sale", "c_sale_child"})
+    last, left_out = odoo.install_leaving_out(["c_mail", "c_sale", "c_sale_child"], graph, attempt)
+    assert left == [["c_mail", "c_sale", "c_sale_child"], ["c_mail"]] and not last.failed
+    assert left_out == {"c_sale": "Odoo stopped answering during its tests", "c_sale_child": "depends on c_sale"}
     assert LogInfo(loaded=["x"], crashed=True).culprit is None  # a crash is never blamed on a module
 
 
@@ -168,8 +195,9 @@ def test_hooks_and_migrations_are_not_measured(monkeypatch, tmp_path):
     monkeypatch.setattr(coverage.odoo, "install", lambda *args, **kwargs: seen.update(kwargs) or LogInfo())
     runner = coverage.OdooRunner.__new__(coverage.OdooRunner)
     runner.profile, runner.data_dir, runner.log_file, runner.work_dir = {}, tmp_path, tmp_path / "log", tmp_path
-    runner.demo_args = ["--with-demo"]
+    runner.demo_args, runner.time_limit = ["--with-demo"], 7
     runner.run("db", ["a"], "label", test=["a"], sources=[tmp_path / "a"])
+    assert seen["time_limit"] == 7  # each test and setUpClass limited (see odoo.install)
     omitted = seen["python_args"][seen["python_args"].index("--omit") + 1].split(",")
     for pattern in ("*/hooks.py", "*/migrations/*", "*/upgrades/*", "*/tests/*"):
         assert pattern in omitted

@@ -18,6 +18,7 @@ from . import coverage, report, report_html
 LOC_EXTENSIONS = {'.py', '.xml', '.js', '.scss', '.css', '.csv'}
 LOC_EXCLUDED_DIRS = {'migrations', 'tests', 'i18n'}
 MEASURE_KEYS = ('label', 'pattern', 'files')
+TEST_TIMEOUT = 10  # minutes a test (or a setUpClass) may take in a coverage run, unless [codebase] test_timeout
 
 
 class Mode(str, Enum):
@@ -198,6 +199,7 @@ def structure(
     conf = config.load_config()
     measures = measures_from_config(conf)
     trends = trends_from_config(conf, measures)
+    test_timeout(conf)  # checked before anything runs
     roots = config.addons_roots(conf)
     missing = [str(r) for r in roots if not r.is_dir()]
     if not roots or missing:
@@ -219,6 +221,16 @@ def structure(
         open_report()
     else:
         typer.echo("   Open it with: jsa report")
+
+
+def test_timeout(conf: dict) -> float:
+    """[codebase] test_timeout of config.toml: the minutes a test, or the setUpClass of a test class, may take in a
+    coverage run before it is stopped and fails (default TEST_TIMEOUT; see odoo.install)."""
+    value = conf.get('codebase', {}).get('test_timeout', TEST_TIMEOUT)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        typer.echo("❌ config.toml: [codebase] test_timeout is the minutes a test may take, e.g. test_timeout = 10")
+        raise typer.Exit(code=1)
+    return float(value)
 
 
 def coverage_profile_of(name: str, conf: dict) -> dict:
@@ -286,14 +298,16 @@ def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str]
             log_file = out_dir / "coverage_odoo.log"
             typer.echo(f"📊 Measuring the coverage of {len(to_measure)} addon(s), mode '{mode.value}' (Odoo log: {log_file})")
             measured, standard = coverage.measure(to_measure, graph, coverage_profile, Mode.isolated.value if mode == Mode.both
-                                                  else mode.value, log_file, standard_tests=standard_tests)
+                                                  else mode.value, log_file, standard_tests=standard_tests,
+                                                  time_limit=test_timeout(conf))
             results.update(measured)
             if mode == Mode.both:
                 alone = {name: coverage.alone_part(results[name]) for name in installable}
                 together = {name: path for name, path in installable.items() if alone[name].coverage != coverage.NOT_INSTALLABLE}
                 typer.echo(f"🧩 Then the {len(together)} addons installed and tested together: what breaks only with the others")
                 found, standard = coverage.measure(together, graph, coverage_profile, Mode.whole.value, log_file,
-                                                   measure_coverage=False, standard_tests=standard_tests, append=True)
+                                                   measure_coverage=False, standard_tests=standard_tests, append=True,
+                                                   time_limit=test_timeout(conf))
                 results.update(coverage.merge_together(alone, found))
             run = {'mode': mode.value, 'profile': profile, 'odoo': odoo_version}
             if written:

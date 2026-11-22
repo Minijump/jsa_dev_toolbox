@@ -9,6 +9,9 @@ addons_roots = [
     "~/projects/my_company_addons",
     "~/projects/OCA",
 ]
+# Minutes a test, or the setUpClass of a test class, may take in 'jsa structure -c' and 'jsa backfill': beyond, it is
+# stopped and fails (a class whose setUpClass fails runs none of its tests). Default 10.
+# test_timeout = 10
 
 # The trend charts of the report of 'jsa structure': those shown, and those unfolded at first. The unfolded ones come
 # first, in the order of trends_open, then the folded ones in the order of trends. Default: all of them (your

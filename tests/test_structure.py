@@ -332,6 +332,15 @@ def test_zoomed_axis_for_lines_of_code():
     assert ">0<" in report_html.line_chart("Failed tests", [("a", 3), ("b", 1)])  # counts start at 0
 
 
+def test_the_time_a_test_may_take(capsys):
+    assert codebase.test_timeout({}) == 10  # minutes, by default
+    assert codebase.test_timeout({"codebase": {"test_timeout": 2.5}}) == 2.5
+    for wrong in (0, -1, "10", True):
+        with pytest.raises(typer.Exit):
+            codebase.test_timeout({"codebase": {"test_timeout": wrong}})
+        assert "test_timeout is the minutes a test may take" in capsys.readouterr().out
+
+
 def test_measures_of_config_counted_in_the_code(tmp_path, capsys):
     addon = make_addon(tmp_path, "my_addon")
     (addon / "models" / "a.py").write_text("# TODO one\nx = 1  # TODO two\n")
