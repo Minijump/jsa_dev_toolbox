@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -30,7 +31,7 @@ from typing import Iterator, Optional
 
 import typer
 
-from jsa import config
+from jsa import config, ui
 from jsa.core import odoo
 from jsa.core.addons import find_addons, read_manifests
 from jsa.structure import codebase, report
@@ -192,6 +193,15 @@ def add_events(history_file: Path, events: list[dict]) -> int:
     return len(new)
 
 
+def where(number: int, total: int, step: "Step", mode: str, start: float, took: list[float]) -> str:
+    """The top line of the board: which measure, of which commit, since when, and the time left (the average of
+    the measures taken so far)."""
+    label = step.name if step.sha.startswith(step.name) else f"{step.name} ({step.sha[:9]})"
+    left = f" · ≈ {ui.duration(sum(took) / len(took) * (total - len(took)))} left" if took else ""
+    return (f"📍 Backfill {number}/{total} · {label} ({step.date[:10]}, Odoo {step.version}) · mode {mode} · "
+            f"{ui.duration(time.monotonic() - start)} elapsed{left}")
+
+
 @dataclass
 class Step:
     name: str  # as written in backfill.toml
@@ -256,25 +266,30 @@ def backfill(dry_run: bool = typer.Option(False, "--dry-run", help="Show the com
         if added:
             typer.echo(f"📌 {added} event(s) added to the history")
 
-        failed = []
-        for number, (step, mode) in enumerate(todo, 1):
-            typer.echo(f"\n📍 [{number}/{len(todo)}] {step.name}, mode {mode}: {step.date[:10]}, Odoo {step.version}, "
-                       f"profile '{step.profile}'")
-            checkout(tree, step.sha)
-            profile = in_worktree(codebase.coverage_profile_of(step.profile, conf), repo, tree)
-            out = config.ANALYSIS_DIR / "backfill" / step.sha[:12] / mode
-            try:
-                run = codebase.analyse(conf, in_tree, out, step.profile, profile, codebase.Mode(mode), measure_all=True,
-                                       measures=measures, trends=trends)
-            except typer.Exit:  # said why: the next measures are taken
-                run = None
-            lines = report.load_history(out / report.HISTORY_FILE)
-            if run and lines:
-                report.append_history(history_file, {**lines[-1], 'code_date': lines[-1].get('code_date') or step.date,
-                                                     'commit': step.sha})
-            else:
-                failed.append(f"{step.name} ({mode})")
-                typer.echo(f"⚠️ {step.name}, mode {mode}: nothing measured (see above)")
+        failed, start, took = [], time.monotonic(), []  # took: how long each measure lasted, for the time left
+        with ui.board() as board:  # in a terminal: where it is, kept at the bottom (see ui.board)
+            for number, (step, mode) in enumerate(todo, 1):
+                typer.echo(f"\n📍 [{number}/{len(todo)}] {step.name}, mode {mode}: {step.date[:10]}, Odoo {step.version}, "
+                           f"profile '{step.profile}'")
+                began = time.monotonic()
+                if board:
+                    board.set('backfill', lambda n=number, s=step, m=mode: where(n, len(todo), s, m, start, took))
+                checkout(tree, step.sha)
+                profile = in_worktree(codebase.coverage_profile_of(step.profile, conf), repo, tree)
+                out = config.ANALYSIS_DIR / "backfill" / step.sha[:12] / mode
+                try:
+                    run = codebase.analyse(conf, in_tree, out, step.profile, profile, codebase.Mode(mode), measure_all=True,
+                                           measures=measures, trends=trends)
+                except typer.Exit:  # said why: the next measures are taken
+                    run = None
+                took.append(time.monotonic() - began)
+                lines = report.load_history(out / report.HISTORY_FILE)
+                if run and lines:
+                    report.append_history(history_file, {**lines[-1], 'code_date': lines[-1].get('code_date') or step.date,
+                                                         'commit': step.sha})
+                else:
+                    failed.append(f"{step.name} ({mode})")
+                    typer.echo(f"⚠️ {step.name}, mode {mode}: nothing measured (see above)")
 
     typer.echo("\n📊 The report of today's code, with the measured commits in its trends")
     codebase.analyse(conf, roots, config.ANALYSIS_DIR, measures=measures, trends=trends)

@@ -17,7 +17,7 @@ from typing import Callable, Iterator, Optional
 import typer
 
 from . import config, pg
-from .ui import StatusLine
+from .ui import Board, StatusLine, duration
 
 LOADING_RE = re.compile(r"odoo\.modules\.loading: Loading module (\w+) \((\d+)/(\d+)\)")
 TEST_START_RE = re.compile(r"odoo\.addons\.(\w+)\.tests\S*: Starting (\S+)")
@@ -163,6 +163,9 @@ def install(profile: dict, db: str, modules: list[str], data_dir: Path, log_file
                     time.sleep(1)
 
             threading.Thread(target=watch, daemon=True).start()
+        board, now_doing = Board.shown, {'what': "starting Odoo", 'since': start}  # the board: see ui.board
+        if board:
+            board.set('odoo', lambda: _on_the_board(label, start, now_doing, info))
         try:
             for line in lines_of(proc):
                 if LOADING_RE.search(line) or TEST_START_RE.search(line) or CLASS_STEP_RE.search(line):
@@ -171,12 +174,20 @@ def install(profile: dict, db: str, modules: list[str], data_dir: Path, log_file
                 info.feed(line)
                 elapsed = time.monotonic() - start
                 if m := LOADING_RE.search(line):
-                    status.update(f"{label}  {int(elapsed)}s  installing {m.group(1)} ({m.group(2)}/{m.group(3)})", key=m.group(1))
+                    now_doing.update(what=f"installing {m.group(1)} ({m.group(2)}/{m.group(3)})", since=time.monotonic())
+                    if not board:
+                        status.update(f"{label}  {int(elapsed)}s  {now_doing['what']}", key=m.group(1))
                 elif m := TEST_START_RE.search(line):
-                    status.update(f"{label}  {int(elapsed)}s  testing {m.group(1)}: {m.group(2)}", key=m.group(1))
+                    now_doing.update(what=f"{m.group(1)}: {m.group(2)}", since=time.monotonic())
+                    if not board:
+                        status.update(f"{label}  {int(elapsed)}s  testing {m.group(1)}: {m.group(2)}", key=m.group(1))
+                elif m := CLASS_STEP_RE.search(line):
+                    now_doing.update(what=f"{m.group(1)}: {m.group(3)}.{m.group(2)}", since=time.monotonic())
             proc.wait()
         finally:  # Ctrl-C: Odoo, in its own process group, does not get it from the terminal. And what Odoo leaves
             _kill(proc)  # behind (a browser of a tour whose test was stopped) goes with its group
+            if board:
+                board.remove('odoo')
     status.done()
     if info.timed_out:
         stuck = info.stuck
@@ -185,6 +196,14 @@ def install(profile: dict, db: str, modules: list[str], data_dir: Path, log_file
     elif proc.returncode != 0 and not info.registry_failed and not info.failed_tests:
         info.crashed = True
     return info
+
+
+def _on_the_board(label: str, start: float, now_doing: dict, info: LogInfo) -> str:
+    """Two lines of the board: this run of Odoo, and what it is doing (the test that runs), with their times."""
+    now = time.monotonic()
+    tests, failed = sum(info.tests.values()), sum(len(names) for names in info.failed_tests.values())
+    return (f"🧪 {label} · {duration(now - start)}" + (f" · {tests} tests, {failed} failed" if tests else "")
+            + f"\n   ▸ {now_doing['what']} · {duration(now - now_doing['since'])}")
 
 
 def lines_of(proc: subprocess.Popen, grace: float = 2) -> Iterator[str]:

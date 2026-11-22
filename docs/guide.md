@@ -173,7 +173,9 @@ of the file), and the addons are measured like `jsa structure -c -m whole`, then
 to keep one). The runs go in the trends at the date of the commit; the reports of each commit stay in
 `codebase_analysis/backfill/<commit>/<mode>/`. A measure already taken is skipped, so a backfill that stopped goes on
 where it was. Each commit is two full measures: count hours for many commits. Needs all the `addons_roots` in one
-git repository.
+git repository. In a terminal, a block stays at the bottom while the messages scroll above it: which measure of how
+many (which commit, mode, time elapsed and left), what Odoo does (the addon, its tests so far) and the test that
+runs, with how long it has been running.
 
 **Which charts.** By default every chart is shown (your measures last), coverage and lines of code unfolded. To
 choose, in `config.toml`:

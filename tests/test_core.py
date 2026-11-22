@@ -1,4 +1,5 @@
 import importlib.metadata
+import sys
 
 import pytest
 import typer
@@ -33,6 +34,75 @@ def test_load_profile(tmp_path, capsys):
     with pytest.raises(typer.Exit):
         config.load_profile("19", conf)
     assert "Available profiles: 17" in capsys.readouterr().out
+
+
+class Screen:
+    """What a terminal shows, for what the board writes: text, new lines, \\x1b[<n>F (up n lines), \\x1b[J (clear
+    to the end of the screen)."""
+
+    def __init__(self):
+        self.rows, self.row, self.col = [""], 0, 0
+        self.encoding, self.errors = "utf-8", "strict"
+
+    def write(self, text):
+        i = 0
+        while i < len(text):
+            if text.startswith("\x1b[", i):
+                end = i + 2
+                while not text[end].isalpha():
+                    end += 1
+                code, arg = text[end], text[i + 2:end]
+                if code == "F":
+                    self.row, self.col = max(0, self.row - int(arg or 1)), 0
+                elif code == "J":
+                    self.rows = self.rows[:self.row] + [self.rows[self.row][:self.col]]
+                i = end + 1
+                continue
+            char = text[i]
+            if char == "\n":
+                self.row, self.col = self.row + 1, 0
+                if self.row == len(self.rows):
+                    self.rows.append("")
+            else:
+                line = self.rows[self.row]
+                self.rows[self.row] = line[:self.col] + char + line[self.col + 1:]
+                self.col += 1
+            i += 1
+        return len(text)
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return True
+
+    @property
+    def shown(self):
+        return [row for row in self.rows if row]
+
+
+def test_the_board_stays_at_the_bottom_the_output_scrolls_above(monkeypatch):
+    screen = Screen()
+    monkeypatch.setattr(sys, "stdout", screen)
+    clock = {'now': 10}
+    with ui.board(tty=True) as board:
+        board.set('backfill', "📍 Backfill 1/3")
+        board.set('odoo', lambda: f"🧪 whole · {clock['now']}s\n   ▸ TestX.test_y")
+        print("first message")
+        sys.stdout.write("in two ")
+        sys.stdout.write("parts\n")
+        clock['now'] = 42
+        board.redraw()  # what the ticking does every second
+        assert screen.shown == ["first message", "in two parts", "📍 Backfill 1/3", "🧪 whole · 42s", "   ▸ TestX.test_y"]
+        board.remove('odoo')
+        board.set('backfill', "📍 Backfill 2/3")  # its place does not change
+        typer.echo("second message")  # what jsa prints with
+        assert screen.shown == ["first message", "in two parts", "second message", "📍 Backfill 2/3"]
+    assert screen.shown == ["first message", "in two parts", "second message"]  # gone at the end
+    assert sys.stdout is screen and ui.Board.shown is None
+    with ui.board(tty=False) as nothing:  # not a terminal (a log file): no board, the output unchanged
+        assert nothing is None and sys.stdout is screen
+    assert ui.duration(42) == "42s" and ui.duration(725) == "12m05s" and ui.duration(8040) == "2h14m"
 
 
 def test_plugins(tmp_path, monkeypatch, capsys):
