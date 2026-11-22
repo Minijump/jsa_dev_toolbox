@@ -38,6 +38,41 @@ def test_log_info():
     assert info.failed and info.culprit == "c_broken"
 
 
+def test_the_stop_of_a_test_cannot_be_swallowed_and_fails_its_class():
+    from jsa.core import odoo_time_limit as limit
+    caught = []
+    try:  # a test with a retry loop catching every Exception: the stop goes through
+        try:
+            raise limit.TestTimeout("stopped")
+        except Exception:
+            caught.append("swallowed")
+    except limit.TestTimeout:
+        caught.append("stopped")
+    assert caught == ["stopped"]
+
+    class Parent:
+        @classmethod
+        def setUpClass(cls):
+            raise limit.TestTimeout("stopped after 1 min")
+
+    class Hanging(Parent):
+        pass
+
+    class Own(Parent):
+        @classmethod
+        def setUpClass(cls):
+            super().setUpClass()
+
+    for test_class in (Hanging, Own):
+        before = vars(test_class).get('setUpClass')
+        with limit.recorded_by_the_suite(test_class, 'setUpClass'):
+            try:  # what Odoo's suite does: it records an Exception as the failure of the class
+                test_class.setUpClass()
+            except Exception as e:
+                assert isinstance(e, limit.ClassTimeout) and "1 min" in str(e)
+        assert vars(test_class).get('setUpClass') is before  # put back as it was
+
+
 def test_a_class_whose_setup_failed_and_odoo_stopped_answering():
     info = LogInfo()
     for line in [  # as Odoo 17 and 19 log them (the setUpClass by its test suite, its tests by odoo_time_limit.py)

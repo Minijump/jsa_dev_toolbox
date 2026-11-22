@@ -199,7 +199,7 @@ def structure(
     conf = config.load_config()
     measures = measures_from_config(conf)
     trends = trends_from_config(conf, measures)
-    test_timeout(conf)  # checked before anything runs
+    test_timeout(conf, warn=True)  # checked before anything runs
     roots = config.addons_roots(conf)
     missing = [str(r) for r in roots if not r.is_dir()]
     if not roots or missing:
@@ -223,14 +223,29 @@ def structure(
         typer.echo("   Open it with: jsa report")
 
 
-def test_timeout(conf: dict) -> float:
+def test_timeout(conf: dict, warn: bool = False) -> float:
     """[codebase] test_timeout of config.toml: the minutes a test, or the setUpClass of a test class, may take in a
-    coverage run before it is stopped and fails (default TEST_TIMEOUT; see odoo.install)."""
+    coverage run before it is stopped and fails (default TEST_TIMEOUT; see odoo.install). `warn`: say when the key
+    is in another table, where it is not read (in TOML, a key written after a [table] belongs to that table)."""
+    if warn:
+        elsewhere = [path for path in _tables_with(conf, 'test_timeout') if path != 'codebase']
+        if elsewhere:
+            typer.echo(f"⚠️ config.toml: test_timeout is in {', '.join(f'[{p}]' if p else 'no table' for p in elsewhere)}, "
+                       "where it is not read: put it under [codebase] (a key written after a [table] belongs to it)")
     value = conf.get('codebase', {}).get('test_timeout', TEST_TIMEOUT)
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         typer.echo("❌ config.toml: [codebase] test_timeout is the minutes a test may take, e.g. test_timeout = 10")
         raise typer.Exit(code=1)
     return float(value)
+
+
+def _tables_with(table: dict, key: str, path: str = "") -> list[str]:
+    """The tables of config.toml holding `key` ('' for the top of the file, 'profiles.19' for a profile)."""
+    found = [path] if key in table else []
+    for name, value in table.items():
+        if isinstance(value, dict):
+            found += _tables_with(value, key, f"{path}.{name}" if path else name)
+    return found
 
 
 def coverage_profile_of(name: str, conf: dict) -> dict:
@@ -296,7 +311,8 @@ def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str]
         to_measure = {name: path for name, path in installable.items() if name not in keep}
         if to_measure:
             log_file = out_dir / "coverage_odoo.log"
-            typer.echo(f"📊 Measuring the coverage of {len(to_measure)} addon(s), mode '{mode.value}' (Odoo log: {log_file})")
+            typer.echo(f"📊 Measuring the coverage of {len(to_measure)} addon(s), mode '{mode.value}', each test and "
+                       f"setUpClass {test_timeout(conf):g} min at most (Odoo log: {log_file})")
             measured, standard = coverage.measure(to_measure, graph, coverage_profile, Mode.isolated.value if mode == Mode.both
                                                   else mode.value, log_file, standard_tests=standard_tests,
                                                   time_limit=test_timeout(conf))

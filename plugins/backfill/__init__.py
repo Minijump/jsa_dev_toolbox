@@ -211,6 +211,7 @@ def backfill(dry_run: bool = typer.Option(False, "--dry-run", help="Show the com
         stop(f"Set [codebase] addons_roots in {config.CONFIG_FILE} to existing folders")
     measures = codebase.measures_from_config(conf)
     trends = codebase.trends_from_config(conf, measures)
+    limit = codebase.test_timeout(conf, warn=True)  # checked before hours of measures
     repo = repository(roots)
     history_file = config.ANALYSIS_DIR / report.HISTORY_FILE
     done = measured_commits(report.load_history(history_file))
@@ -239,8 +240,9 @@ def backfill(dry_run: bool = typer.Option(False, "--dry-run", help="Show the com
 
         modes = plan['modes']
         todo = [(step, mode) for step in steps for mode in modes if (step.sha, mode) not in done]
-        typer.echo(f"📋 {len(steps)} commit(s) of {repo}, coverage measured in mode {' then '.join(modes)} "
-                   f"({len(steps) * len(modes) - len(todo)} of {len(steps) * len(modes)} measures already done):")
+        typer.echo(f"📋 {len(steps)} commit(s) of {repo}, coverage measured in mode {' then '.join(modes)}, each test "
+                   f"and setUpClass {limit:g} min at most ({len(steps) * len(modes) - len(todo)} of "
+                   f"{len(steps) * len(modes)} measures already done):")
         for number, step in enumerate(steps, 1):
             label = step.name if step.sha.startswith(step.name) else f"{step.name} ({step.sha[:9]})"
             already = [mode for mode in modes if (step.sha, mode) in done]

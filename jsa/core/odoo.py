@@ -25,7 +25,7 @@ TEST_FAIL_RE = re.compile(r"odoo\.addons\.(\w+)\.tests\S*: (?:FAIL|ERROR): (\S+)
 CLASS_FAIL_RE = re.compile(r"odoo\.tests\.suite: (?:FAIL|ERROR): (setUpClass|tearDownClass) \(odoo\.addons\.(\w+)\.\S*?(\w+)\)")
 REGISTRY_FAILED = ("Failed to load registry", "Failed to initialize database")
 TIME_LIMIT = Path(__file__).with_name("odoo_time_limit.py")  # run by the python of a profile, see install
-SILENCE_MARGIN = 5  # minutes of silence in Odoo's log, after the time limit of a test, before Odoo is killed
+SILENCE_MARGIN = 5  # minutes without a test starting (or a module loading), after the time limit, before Odoo is killed
 
 
 @dataclass
@@ -86,8 +86,9 @@ def install(profile: dict, db: str, modules: list[str], data_dir: Path, log_file
     """Install modules in a database with the odoo-bin of a profile, following Odoo's log live (it is appended to
     `log_file`). `python_args` come before odoo-bin (e.g. to run it under coverage), `odoo_args` after its options.
     `time_limit`: the minutes a test, or the setUpClass of a test class, may take: it is stopped and fails beyond
-    (odoo_time_limit.py runs odoo-bin). What Python cannot stop (a query waiting for a lock) leaves Odoo's log
-    silent: after `time_limit` + SILENCE_MARGIN minutes of silence, Odoo is killed (`info.timed_out`)."""
+    (odoo_time_limit.py runs odoo-bin). For what Python cannot stop (a query waiting for a lock): when no test starts
+    and no module loads for `time_limit` + SILENCE_MARGIN minutes, Odoo is killed (`info.timed_out`). Progress, not
+    any line: a stuck test may keep logging."""
     odoo_bin = [str(TIME_LIMIT), f"{time_limit:g}", profile['odoo_bin']] if time_limit else [profile['odoo_bin']]
     cmd = [profile['python'], *python_args, *odoo_bin, "-d", db, "--addons-path", ",".join(profile['addons_paths']),
            "--data-dir", str(data_dir), "--http-port", str(free_port()), "--stop-after-init", "--max-cron-threads=0",
@@ -98,15 +99,16 @@ def install(profile: dict, db: str, modules: list[str], data_dir: Path, log_file
         # its own process group: what it starts (a browser for the tours) is stopped with it
         proc = subprocess.Popen(cmd, cwd=cwd, env=config.odoo_env(profile), stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True)
-        last_line = [time.monotonic()]
+        last_progress = [time.monotonic()]
         if time_limit:
-            silence = (time_limit + SILENCE_MARGIN) * 60
+            stuck = (time_limit + SILENCE_MARGIN) * 60
 
             def watch():
                 while proc.poll() is None:
-                    if time.monotonic() - last_line[0] > silence:
+                    if time.monotonic() - last_progress[0] > stuck:
                         info.timed_out = True
-                        log.write(f"\n===== jsa: nothing in Odoo's log for {time_limit + SILENCE_MARGIN:g} min, Odoo killed\n")
+                        log.write(f"\n===== jsa: no test started and no module loaded for {time_limit + SILENCE_MARGIN:g} "
+                                  "min, Odoo killed\n")
                         _kill(proc)
                         return
                     time.sleep(2)
@@ -114,7 +116,8 @@ def install(profile: dict, db: str, modules: list[str], data_dir: Path, log_file
             threading.Thread(target=watch, daemon=True).start()
         try:
             for line in proc.stdout:
-                last_line[0] = time.monotonic()
+                if LOADING_RE.search(line) or TEST_START_RE.search(line):
+                    last_progress[0] = time.monotonic()
                 log.write(line)
                 info.feed(line)
                 elapsed = time.monotonic() - start
@@ -129,7 +132,7 @@ def install(profile: dict, db: str, modules: list[str], data_dir: Path, log_file
     status.done()
     if info.timed_out:
         typer.echo(f"⚠️ Odoo stopped answering ({info.culprit or 'see the log'}): killed after "
-                   f"{time_limit + SILENCE_MARGIN:g} min of silence")
+                   f"{time_limit + SILENCE_MARGIN:g} min without a test starting")
     elif proc.returncode != 0 and not info.registry_failed and not info.failed_tests:
         info.crashed = True
     return info

@@ -339,6 +339,11 @@ def test_the_time_a_test_may_take(capsys):
         with pytest.raises(typer.Exit):
             codebase.test_timeout({"codebase": {"test_timeout": wrong}})
         assert "test_timeout is the minutes a test may take" in capsys.readouterr().out
+    # written at the end of the file, after another [table]: it belongs to that table, and is not read
+    misplaced = {"codebase": {"addons_roots": []}, "profiles": {"19": {"python": "x", "test_timeout": 1}}}
+    assert codebase.test_timeout(misplaced, warn=True) == 10
+    assert "test_timeout is in [profiles.19], where it is not read: put it under [codebase]" in capsys.readouterr().out
+    assert codebase.test_timeout({"codebase": {"test_timeout": 1}}, warn=True) == 1 and capsys.readouterr().out == ""
 
 
 def test_measures_of_config_counted_in_the_code(tmp_path, capsys):

@@ -4,10 +4,10 @@ Not imported by jsa: the python of a profile runs it, in place of odoo-bin (see 
     python odoo_time_limit.py <minutes> <path of odoo-bin> <arguments of odoo-bin...>
 
 A test running longer is stopped with an error: it fails, the next tests run. A setUpClass running longer fails its
-class: Odoo's test runner then runs none of its tests, each one is logged as failed (for any failed setUpClass). Uses
-SIGALRM: it stops Python code (a loop, a wait on the
-network), not a call blocked inside C (e.g. a database query waiting for a lock): jsa stops Odoo itself when its log
-stays silent too long (odoo.install).
+class: Odoo's test runner then runs none of its tests, each one is logged as failed (for any failed setUpClass).
+The error is not an Exception: a test catching every Exception (a retry loop) cannot swallow it. Uses SIGALRM: it
+stops Python code (a loop, a wait on the network), not a call blocked inside C (e.g. a database query waiting for a
+lock): jsa stops Odoo itself when no test starts for too long (odoo.install).
 """
 import importlib.abc
 import logging
@@ -15,10 +15,16 @@ import os
 import runpy
 import signal
 import sys
+from contextlib import contextmanager
 
 
-class TestTimeout(Exception):
-    """Raised in the test that took too long."""
+class TestTimeout(BaseException):
+    """Raised in the test that took too long. Not an Exception, so that the test's own `except Exception` cannot
+    swallow it: Odoo's test runner records any error of a test (a bare except)."""
+
+
+class ClassTimeout(Exception):
+    """The same in a setUpClass or tearDownClass: Odoo's suite records only an Exception there."""
 
 
 class PatchAfterImport(importlib.abc.MetaPathFinder):
@@ -47,15 +53,41 @@ class PatchAfterImport(importlib.abc.MetaPathFinder):
         return spec
 
 
-def limit(function, seconds: int):
-    """`function`, stopped by a TestTimeout when it runs longer than `seconds`."""
-    def limited(*args, **kwargs):
-        signal.alarm(seconds)
+@contextmanager
+def recorded_by_the_suite(test_class, method: str):
+    """While it lasts, `test_class.<method>` (setUpClass, tearDownClass) turns a TestTimeout into a ClassTimeout:
+    the suite records the failure of the class instead of stopping."""
+    if test_class is None or not hasattr(test_class, method):
+        yield
+        return
+    own, bound = vars(test_class).get(method), getattr(test_class, method)
+
+    def converted():
         try:
-            return function(*args, **kwargs)
-        finally:
-            signal.alarm(0)
-    return limited
+            return bound()
+        except TestTimeout as e:
+            raise ClassTimeout(str(e)) from None
+
+    setattr(test_class, method, converted)
+    try:
+        yield
+    finally:
+        if own is not None:
+            setattr(test_class, method, own)
+        else:
+            delattr(test_class, method)
+
+
+def class_step(handle, method: str, class_of, seconds: int):
+    """`handle` (the suite running a setUpClass or a tearDownClass), stopped after `seconds`."""
+    def handled(self, test, result):
+        with recorded_by_the_suite(class_of(test, result), method):
+            signal.alarm(seconds)
+            try:
+                return handle(self, test, result)
+            finally:
+                signal.alarm(0)
+    return handled
 
 
 def main():
@@ -71,14 +103,16 @@ def main():
     seconds = max(1, round(minutes * 60))
 
     def patch_suite(suite):  # Odoo's own copy of unittest's suite (Odoo 16 and later)
-        set_up = limit(suite.TestSuite._handleClassSetUp, seconds)
+        set_up = class_step(suite.TestSuite._handleClassSetUp, 'setUpClass', lambda test, result: type(test), seconds)
 
         def handle_class_setup(self, test, result):
             set_up(self, test, result)
             mark_not_run(self, type(test))
 
         suite.TestSuite._handleClassSetUp = handle_class_setup
-        suite.TestSuite._tearDownPreviousClass = limit(suite.TestSuite._tearDownPreviousClass, seconds)
+        suite.TestSuite._tearDownPreviousClass = class_step(
+            suite.TestSuite._tearDownPreviousClass, 'tearDownClass',
+            lambda test, result: getattr(result, '_previousTestClass', None), seconds)
 
     reported = set()
 
