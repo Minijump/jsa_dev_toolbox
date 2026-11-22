@@ -38,6 +38,19 @@ def test_log_info():
     assert info.failed and info.culprit == "c_broken"
 
 
+def test_reading_odoo_ends_when_it_exits_even_if_a_process_it_started_keeps_its_output():
+    import subprocess
+    import sys
+    import time
+    # like Odoo leaving the browser of a stopped tour behind: the output stays open 8 s after Odoo has gone
+    script = ("import subprocess, sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(8)']); "
+              "print('first'); print('last')")
+    proc = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    start = time.monotonic()
+    assert [line.strip() for line in odoo.lines_of(proc, grace=0.5)] == ["first", "last"]  # everything it wrote
+    assert time.monotonic() - start < 5  # not the 8 s of the process left behind
+
+
 def test_the_stop_of_a_test_cannot_be_swallowed_and_fails_its_class():
     from jsa.core import odoo_time_limit as limit
     caught = []
@@ -89,20 +102,76 @@ def test_a_class_whose_setup_failed_and_odoo_stopped_answering():
     # the tests of the class are failed, test_a passed: 3 tests, 2 failed
     assert info.tests == {"c_mail": 3, "c_sale": 2}
     assert not info.failed and info.culprit is None and info.testing == "c_sale"
-    info.timed_out = True  # killed: its log stayed silent
-    assert info.failed and info.culprit == "c_sale"  # the module being tested is left out, the others retried
-    left = []
-
-    def attempt(modules):
-        left.append(list(modules))
-        return info if len(left) == 1 else LogInfo()
-
-    graph = DependencyGraph({"base": [], "c_mail": ["base"], "c_sale": ["base"], "c_sale_child": ["c_sale"]},
-                            custom={"c_mail", "c_sale", "c_sale_child"})
-    last, left_out = odoo.install_leaving_out(["c_mail", "c_sale", "c_sale_child"], graph, attempt)
-    assert left == [["c_mail", "c_sale", "c_sale_child"], ["c_mail"]] and not last.failed
-    assert left_out == {"c_sale": "Odoo stopped answering during its tests", "c_sale_child": "depends on c_sale"}
     assert LogInfo(loaded=["x"], crashed=True).culprit is None  # a crash is never blamed on a module
+
+
+GRAPH_SALE = DependencyGraph({"base": [], "c_mail": ["base"], "c_sale": ["base"], "c_sale_child": ["c_sale"]},
+                             custom={"c_mail", "c_sale", "c_sale_child"})
+
+
+def killed(*lines) -> LogInfo:
+    """What jsa knows of a run it killed (Odoo stopped answering) after these lines."""
+    info = LogInfo()
+    for line in lines:
+        info.feed(line)
+    info.timed_out = True
+    return info
+
+
+def test_a_stuck_test_is_skipped_and_the_tests_run_again():
+    tries = []
+
+    def attempt(modules, skipped):
+        tries.append((list(modules), [s.spec for s in skipped]))
+        if len(tries) == 1:  # stuck in a test of c_sale (Python could not stop it): killed
+            return killed("INFO db odoo.addons.c_sale.tests.test_y: Starting TestY.test_stuck ...")
+        info = LogInfo()
+        for line in ("INFO db odoo.addons.c_sale.tests.test_y: Starting TestY.test_fine ...",
+                     "INFO db odoo.addons.c_mail.tests.test_x: Starting TestX.test_a ..."):
+            info.feed(line)
+        return info
+
+    last, left_out = odoo.install_leaving_out(["c_mail", "c_sale", "c_sale_child"], GRAPH_SALE, attempt)
+    # the same addons again, without that test: the other tests of c_sale run, it is installed and measured
+    assert tries == [(["c_mail", "c_sale", "c_sale_child"], []), (["c_mail", "c_sale", "c_sale_child"], ["/c_sale:TestY.test_stuck"])]
+    assert left_out == {} and not last.failed
+    assert last.failed_tests == {"c_sale": ["TestY.test_stuck"]} and last.tests["c_sale"] == 2  # counted, failed
+
+
+def test_a_stuck_setup_class_skips_its_class_and_an_install_that_hangs_leaves_the_addon_out():
+    stuck = killed("INFO db odoo.addons.c_sale.tests.test_y: Starting TestY.test_fine ...",
+                   "INFO db odoo.addons.c_sale.tests.test_z: jsa: setUpClass TestZ: test_one test_two").stuck
+    assert (stuck.module, stuck.spec) == ("c_sale", "/c_sale:TestZ")  # the whole class: its setUpClass never ended
+    assert stuck.failed == ["TestZ.setUpClass", "TestZ.test_one", "TestZ.test_two"]
+    # killed while installing (no test running): nothing to skip, the addon is left out with those depending on it
+    install = killed("INFO db odoo.addons.c_mail.tests.test_x: Starting TestX.test_a ...",
+                     "INFO db odoo.modules.loading: Loading module c_sale (3/4)")
+    assert install.stuck is None and install.culprit == "c_sale"
+    tries = []
+
+    def attempt(modules, skipped):
+        tries.append(list(modules))
+        return install if len(tries) == 1 else LogInfo()
+
+    last, left_out = odoo.install_leaving_out(["c_mail", "c_sale", "c_sale_child"], GRAPH_SALE, attempt)
+    assert tries == [["c_mail", "c_sale", "c_sale_child"], ["c_mail"]] and not last.failed
+    assert left_out == {"c_sale": "Odoo stopped answering during its tests", "c_sale_child": "depends on c_sale"}
+
+
+def test_isolated_skips_a_stuck_test_of_an_addon():
+    class StuckOnce(FakeRunner):
+        def run(self, db, install, label, test=(), sources=(), measure=True, skip=()):
+            info = super().run(db, install, label, test, sources, measure, skip)
+            if test and not skip:  # the first try of its tests: stuck in one of them
+                info = killed(f"INFO db odoo.addons.{test[0]}.tests.t: Starting TestA.test_stuck ...")
+            self.skips = getattr(self, 'skips', []) + ([[s.spec for s in skip]] if test else [])
+            return info
+
+    runner = StuckOnce()
+    results = coverage.run_isolated({"c_base": Path("c_base")}, GRAPH, runner)
+    assert runner.skips == [[], ["/c_base:TestA.test_stuck"]]  # tried again without it
+    assert results["c_base"].coverage != NOT_INSTALLABLE and results["c_base"].failed == ["TestA.test_stuck"]
+    assert runner.dbs == {}  # the database of the stopped try is dropped too
 
 
 def test_module_coverage(tmp_path):
@@ -130,7 +199,7 @@ class FakeRunner:
             self.copies.append((template, name))
         return name
 
-    def run(self, db, install, label, test=(), sources=(), measure=True):
+    def run(self, db, install, label, test=(), sources=(), measure=True, skip=()):
         self.installs.append((db, tuple(sorted(install)), bool(test)))
         self.tested.append((tuple(test), measure))
         broken = self.broken & GRAPH.closure(install)

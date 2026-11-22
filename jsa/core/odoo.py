@@ -1,5 +1,6 @@
 """Running the Odoo of a profile: installing modules while following its log, serving a database for a while."""
 import os
+import queue
 import re
 import signal
 import socket
@@ -11,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from collections import Counter
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 import typer
 
@@ -23,9 +24,27 @@ TEST_START_RE = re.compile(r"odoo\.addons\.(\w+)\.tests\S*: Starting (\S+)")
 TEST_FAIL_RE = re.compile(r"odoo\.addons\.(\w+)\.tests\S*: (?:FAIL|ERROR): (\S+)")
 # a test class whose setUpClass (or tearDownClass) failed: none of its tests ran. Logged by Odoo's test suite
 CLASS_FAIL_RE = re.compile(r"odoo\.tests\.suite: (?:FAIL|ERROR): (setUpClass|tearDownClass) \(odoo\.addons\.(\w+)\.\S*?(\w+)\)")
+# written by odoo_time_limit.py when a test class starts or ends: what runs when no "Starting" line says it
+CLASS_STEP_RE = re.compile(r"odoo\.addons\.(\w+)\.tests\S*: jsa: (setUpClass|tearDownClass) (\w+)(?:: (.*))?")
+TESTS_END_RE = re.compile(r"odoo\.service\.server: \d+ post-tests in|when loading database|Initiating shutdown")
 REGISTRY_FAILED = ("Failed to load registry", "Failed to initialize database")
 TIME_LIMIT = Path(__file__).with_name("odoo_time_limit.py")  # run by the python of a profile, see install
-SILENCE_MARGIN = 5  # minutes without a test starting (or a module loading), after the time limit, before Odoo is killed
+# minutes without a test starting (or a module loading), after the time limit, before Odoo is killed: during the
+# tests, a stopped test cleans up in seconds; otherwise a big module may load, the coverage be saved, for a while
+TEST_MARGIN = 1
+SILENCE_MARGIN = 5
+
+
+@dataclass
+class Stuck:
+    """What made Odoo stop answering during the tests: tested again without it, counted as failed."""
+    module: str
+    spec: str  # for --test-tags: "/module:TestClass.test_method", or "/module:TestClass" for its setUpClass
+    failed: list[str]  # the test, or the setUpClass and every test of its class
+
+    @property
+    def what(self) -> str:
+        return self.failed[0]
 
 
 @dataclass
@@ -38,15 +57,27 @@ class LogInfo:
     crashed: bool = False  # odoo-bin failed without that message
     testing: Optional[str] = None  # the module whose tests run
     timed_out: bool = False  # Odoo was killed: its log stayed silent too long
+    running: Optional[tuple] = None  # (module, "TestClass.test_method") or (module, "TestClass", "setUpClass")
+    class_tests: dict = field(default_factory=dict)  # {(module, class): its test names}, from odoo_time_limit.py
+    in_tests: bool = False  # between a test starting and the end of the tests (see install)
 
     def feed(self, line: str):
         m = LOADING_RE.search(line)
         if m:
             self.loaded.append(m.group(1))
+            self.in_tests = False
         m = TEST_START_RE.search(line)
         if m:
             self.tests[m.group(1)] += 1
-            self.testing = m.group(1)
+            self.testing, self.running, self.in_tests = m.group(1), (m.group(1), m.group(2)), True
+        m = CLASS_STEP_RE.search(line)
+        if m:
+            module, step, test_class, names = m.groups()
+            if names is not None:
+                self.class_tests[(module, test_class)] = names.split()
+            self.testing, self.running, self.in_tests = module, (module, test_class, step), True
+        if TESTS_END_RE.search(line):
+            self.in_tests = False
         m = TEST_FAIL_RE.search(line)
         if m:
             self.fail(m.group(1), m.group(2))
@@ -68,10 +99,30 @@ class LogInfo:
     @property
     def culprit(self) -> Optional[str]:
         """The module whose loading made the install fail; when Odoo stopped answering, the one being tested (else
-        loaded)."""
+        being loaded)."""
         if self.timed_out:
-            return self.testing or (self.loaded[-1] if self.loaded else None)
+            return (self.testing if self.in_tests else None) or (self.loaded[-1] if self.loaded else None)
         return self.loaded[-1] if self.registry_failed and self.loaded else None
+
+    @property
+    def stuck(self) -> Optional[Stuck]:
+        """When Odoo was killed during the tests: the test, or the test class, that was running."""
+        if not self.timed_out or not self.in_tests or not self.running:
+            return None
+        module, name, *step = self.running
+        if not step:  # a test
+            return Stuck(module, f"/{module}:{name}", [name])
+        return Stuck(module, f"/{module}:{name}",
+                     [f"{name}.{step[0]}"] + [f"{name}.{test}" for test in self.class_tests.get((module, name), [])])
+
+
+def record_skipped(info: LogInfo, skipped: list[Stuck]):
+    """The tests left out of the last try because Odoo stopped answering with them: failed, and counted."""
+    for stuck in skipped:
+        for name in stuck.failed:
+            if name not in info.failed_tests.get(stuck.module, []):
+                info.tests[stuck.module] += 1
+                info.fail(stuck.module, name)
 
 
 def free_port() -> int:
@@ -87,8 +138,8 @@ def install(profile: dict, db: str, modules: list[str], data_dir: Path, log_file
     `log_file`). `python_args` come before odoo-bin (e.g. to run it under coverage), `odoo_args` after its options.
     `time_limit`: the minutes a test, or the setUpClass of a test class, may take: it is stopped and fails beyond
     (odoo_time_limit.py runs odoo-bin). For what Python cannot stop (a query waiting for a lock): when no test starts
-    and no module loads for `time_limit` + SILENCE_MARGIN minutes, Odoo is killed (`info.timed_out`). Progress, not
-    any line: a stuck test may keep logging."""
+    and no module loads for `time_limit` + TEST_MARGIN minutes during the tests (+ SILENCE_MARGIN otherwise), Odoo is
+    killed (`info.timed_out`, `info.stuck`). Progress, not any line: a stuck test may keep logging."""
     odoo_bin = [str(TIME_LIMIT), f"{time_limit:g}", profile['odoo_bin']] if time_limit else [profile['odoo_bin']]
     cmd = [profile['python'], *python_args, *odoo_bin, "-d", db, "--addons-path", ",".join(profile['addons_paths']),
            "--data-dir", str(data_dir), "--http-port", str(free_port()), "--stop-after-init", "--max-cron-threads=0",
@@ -99,24 +150,22 @@ def install(profile: dict, db: str, modules: list[str], data_dir: Path, log_file
         # its own process group: what it starts (a browser for the tours) is stopped with it
         proc = subprocess.Popen(cmd, cwd=cwd, env=config.odoo_env(profile), stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True)
-        last_progress = [time.monotonic()]
+        last_progress, waited = [time.monotonic()], [0.0]
         if time_limit:
-            stuck = (time_limit + SILENCE_MARGIN) * 60
-
             def watch():
                 while proc.poll() is None:
-                    if time.monotonic() - last_progress[0] > stuck:
+                    waited[0] = time_limit + (TEST_MARGIN if info.in_tests else SILENCE_MARGIN)
+                    if time.monotonic() - last_progress[0] > waited[0] * 60:
                         info.timed_out = True
-                        log.write(f"\n===== jsa: no test started and no module loaded for {time_limit + SILENCE_MARGIN:g} "
-                                  "min, Odoo killed\n")
+                        log.write(f"\n===== jsa: no test started and no module loaded for {waited[0]:g} min, Odoo killed\n")
                         _kill(proc)
                         return
-                    time.sleep(2)
+                    time.sleep(1)
 
             threading.Thread(target=watch, daemon=True).start()
         try:
-            for line in proc.stdout:
-                if LOADING_RE.search(line) or TEST_START_RE.search(line):
+            for line in lines_of(proc):
+                if LOADING_RE.search(line) or TEST_START_RE.search(line) or CLASS_STEP_RE.search(line):
                     last_progress[0] = time.monotonic()
                 log.write(line)
                 info.feed(line)
@@ -126,37 +175,73 @@ def install(profile: dict, db: str, modules: list[str], data_dir: Path, log_file
                 elif m := TEST_START_RE.search(line):
                     status.update(f"{label}  {int(elapsed)}s  testing {m.group(1)}: {m.group(2)}", key=m.group(1))
             proc.wait()
-        finally:  # Ctrl-C: Odoo, in its own process group, does not get it from the terminal
-            if proc.poll() is None:
-                _kill(proc)
+        finally:  # Ctrl-C: Odoo, in its own process group, does not get it from the terminal. And what Odoo leaves
+            _kill(proc)  # behind (a browser of a tour whose test was stopped) goes with its group
     status.done()
     if info.timed_out:
-        typer.echo(f"⚠️ Odoo stopped answering ({info.culprit or 'see the log'}): killed after "
-                   f"{time_limit + SILENCE_MARGIN:g} min without a test starting")
+        stuck = info.stuck
+        typer.echo(f"⚠️ Odoo stopped answering ({f'{stuck.module}: {stuck.what}' if stuck else info.culprit or 'see the log'}): "
+                   f"killed after {waited[0]:g} min without a test starting")
     elif proc.returncode != 0 and not info.registry_failed and not info.failed_tests:
         info.crashed = True
     return info
 
 
+def lines_of(proc: subprocess.Popen, grace: float = 2) -> Iterator[str]:
+    """The lines Odoo writes, until it has exited. Not until its output closes: a process it started (the browser
+    of a tour, anything a test launches) keeps that output open after Odoo has gone, and jsa would wait forever."""
+    lines = queue.Queue()
+
+    def read():
+        for line in proc.stdout:
+            lines.put(line)
+        lines.put(None)  # closed
+
+    threading.Thread(target=read, daemon=True).start()
+    ended = None  # when Odoo was seen gone
+    while True:
+        try:
+            line = lines.get(timeout=0.5)
+        except queue.Empty:
+            if proc.poll() is None:
+                continue
+            ended = ended or time.monotonic()
+            if time.monotonic() - ended > grace:  # what it wrote before exiting has been read
+                return
+            continue
+        if line is None:
+            return
+        yield line
+
+
 def _kill(proc: subprocess.Popen):
-    """Odoo and what it started (its process group)."""
+    """Odoo and what it started (its process group), even after Odoo itself has exited."""
     try:
         os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
     proc.wait()
 
 
-def install_leaving_out(modules, graph, attempt: Callable[[list[str]], LogInfo]) -> tuple[Optional[LogInfo], dict[str, str]]:
-    """Install modules together: `attempt(modules)` installs them on a new database and gives what Odoo's log said.
-    When one of them fails to install, it is left out with the modules depending on it (`graph`), and the others are
-    tried again; the same when Odoo stopped answering during its tests (`timed_out`). Gives the log of the last
-    attempt (None when no module was left to try) and the modules left out: {module: why}."""
-    remaining, left_out = sorted(modules), {}
+def install_leaving_out(modules, graph, attempt: Callable[[list[str], list[Stuck]], LogInfo]) -> tuple[Optional[LogInfo], dict[str, str]]:
+    """Install modules together: `attempt(modules, skipped)` installs them on a new database, without running the
+    tests `skipped`, and gives what Odoo's log said. When Odoo stopped answering during a test (or a setUpClass), the
+    same modules are tried again without it, and it counts as failed. When one of them fails to install (or Odoo
+    stopped answering outside the tests), it is left out with the modules depending on it (`graph`), and the others
+    are tried again. Gives the log of the last attempt (None when no module was left to try) and the modules left
+    out: {module: why}."""
+    remaining, left_out, skipped = sorted(modules), {}, []
     while remaining:
-        info = attempt(remaining)
+        info = attempt(remaining, skipped)
+        stuck = info.stuck
+        if stuck and stuck.spec not in [s.spec for s in skipped]:
+            skipped.append(stuck)
+            typer.echo(f"⚠️ {stuck.module}: {stuck.what} made Odoo stop answering: counted as failed, the tests run "
+                       "again without it")
+            continue
         culprit = info.culprit
         if culprit not in remaining:  # installed, or failed for a reason that is none of them
+            record_skipped(info, skipped)
             return info, left_out
         excluded = [m for m in remaining if culprit in graph.closure([m])]
         why = "Odoo stopped answering during its tests" if info.timed_out else "install failed"

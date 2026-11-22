@@ -157,15 +157,15 @@ class OdooRunner:
         return odoo.installed_modules(db, modules)
 
     def run(self, db: str, install: list[str], label: str, test: list[str] = (), sources: list[Path] = (),
-            measure: bool = True) -> LogInfo:
-        """Install modules (+ run the tests of the `test` modules, under coverage of `sources` if `measure`),
-        following Odoo's log live."""
+            measure: bool = True, skip: list[odoo.Stuck] = ()) -> LogInfo:
+        """Install modules (+ run the tests of the `test` modules but those of `skip`, under coverage of `sources` if
+        `measure`), following Odoo's log live."""
         python_args, odoo_args = [], []
         if test:
             if measure:
                 python_args = ["-m", "coverage", "run", "--branch", "--source", ",".join(str(s) for s in sources),
                                "--omit", ",".join(OMITTED)]
-            odoo_args = ["--test-enable", "--test-tags", ",".join(f"/{m}" for m in test)]
+            odoo_args = ["--test-enable", "--test-tags", ",".join([f"/{m}" for m in test] + [f"-{s.spec}" for s in skip])]
         return odoo.install(self.profile, db, install, self.data_dir, self.log_file, label, cwd=self.work_dir,
                             python_args=python_args, odoo_args=self.demo_args + odoo_args, time_limit=self.time_limit)
 
@@ -210,11 +210,12 @@ def run_whole(addons: dict[str, Path], graph: DependencyGraph, runner: OdooRunne
 
     tried = {}  # the database of the last attempt
 
-    def attempt(modules: list[str]) -> LogInfo:
+    def attempt(modules: list[str], skipped: list[odoo.Stuck]) -> LogInfo:
         typer.echo(f"🧪 Installing and testing {len(modules)} custom addons together...")
         db = tried['db'] = runner.new_db("whole", template=base)
         tested = modules + (sorted(graph.closure(modules) - graph.custom) if standard_tests else [])
-        info = runner.run(db, modules, "whole", test=tested, sources=[addons[m] for m in modules], measure=measure)
+        info = runner.run(db, modules, "whole", test=tested, sources=[addons[m] for m in modules], measure=measure,
+                          skip=skipped)
         if info.failed:
             runner.drop(db)
         return info
@@ -251,8 +252,19 @@ def run_isolated(addons: dict[str, Path], graph: DependencyGraph, runner: OdooRu
         if deps in failed:
             results[module] = Result(NOT_INSTALLABLE, note=failed[deps])
         else:
-            db = runner.new_db(f"test{i}", template=snapshots[deps])
-            info = runner.run(db, [module], f"{label}: tests", test=[module], sources=[addons[module]])
+            skipped = []  # tests that made Odoo stop answering: run again without them, counted as failed
+            while True:
+                db = runner.new_db(f"test{i}", template=snapshots[deps])
+                info = runner.run(db, [module], f"{label}: tests", test=[module], sources=[addons[module]], skip=skipped)
+                stuck = info.stuck
+                if not stuck or stuck.spec in [s.spec for s in skipped]:
+                    break
+                skipped.append(stuck)
+                typer.echo(f"⚠️ {stuck.module}: {stuck.what} made Odoo stop answering: counted as failed, the tests "
+                           "run again without it")
+                runner.drop(db)
+            if not info.failed:
+                odoo.record_skipped(info, skipped)
             results[module] = (Result(NOT_INSTALLABLE, note="Odoo stopped answering during its tests" if info.timed_out
                                       else "install failed") if info.failed
                                else _results(runner, db, info, {module: addons[module]})[module])

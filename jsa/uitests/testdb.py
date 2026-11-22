@@ -74,7 +74,7 @@ def install_modules(template: str, modules: list[str], custom: dict[str, Path], 
     if not custom:
         return []
 
-    def attempt(names_: list[str]):
+    def attempt(names_: list[str], skipped=()):  # no test runs here: nothing to skip
         copy(base, template)
         result = install(template, names_, "your addons")
         if result.failed:

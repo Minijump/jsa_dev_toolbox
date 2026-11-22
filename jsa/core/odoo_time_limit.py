@@ -104,15 +104,29 @@ def main():
 
     def patch_suite(suite):  # Odoo's own copy of unittest's suite (Odoo 16 and later)
         set_up = class_step(suite.TestSuite._handleClassSetUp, 'setUpClass', lambda test, result: type(test), seconds)
+        tear_down = class_step(suite.TestSuite._tearDownPreviousClass, 'tearDownClass',
+                               lambda test, result: getattr(result, '_previousTestClass', None), seconds)
 
         def handle_class_setup(self, test, result):
+            test_class = type(test)
+            if getattr(result, '_previousTestClass', None) is not test_class:  # else Odoo does nothing
+                tests = [getattr(t, '_testMethodName', '?') for t in self if type(t) is test_class]
+                announce(test_class, f"setUpClass {test_class.__name__}: {' '.join(tests)}")
             set_up(self, test, result)
-            mark_not_run(self, type(test))
+            mark_not_run(self, test_class)
+
+        def tear_down_previous_class(self, test, result):
+            previous = getattr(result, '_previousTestClass', None)
+            if previous is not None and previous is not type(test) and not getattr(previous, '_classSetupFailed', False):
+                announce(previous, f"tearDownClass {previous.__name__}")
+            tear_down(self, test, result)
 
         suite.TestSuite._handleClassSetUp = handle_class_setup
-        suite.TestSuite._tearDownPreviousClass = class_step(
-            suite.TestSuite._tearDownPreviousClass, 'tearDownClass',
-            lambda test, result: getattr(result, '_previousTestClass', None), seconds)
+        suite.TestSuite._tearDownPreviousClass = tear_down_previous_class
+
+    def announce(test_class, what: str):
+        """What runs between two tests, for jsa (odoo.CLASS_STEP_RE): if Odoo stops answering there, jsa skips it."""
+        logging.getLogger(test_class.__module__).info("jsa: %s", what)
 
     reported = set()
 
