@@ -4,11 +4,13 @@ Not imported by jsa: the python of a profile runs it, in place of odoo-bin (see 
     python odoo_time_limit.py <minutes> <path of odoo-bin> <arguments of odoo-bin...>
 
 A test running longer is stopped with an error: it fails, the next tests run. A setUpClass running longer fails its
-class: Odoo's test runner then runs none of its tests. Uses SIGALRM: it stops Python code (a loop, a wait on the
+class: Odoo's test runner then runs none of its tests, each one is logged as failed (for any failed setUpClass). Uses
+SIGALRM: it stops Python code (a loop, a wait on the
 network), not a call blocked inside C (e.g. a database query waiting for a lock): jsa stops Odoo itself when its log
 stays silent too long (odoo.install).
 """
 import importlib.abc
+import logging
 import os
 import runpy
 import signal
@@ -69,8 +71,29 @@ def main():
     seconds = max(1, round(minutes * 60))
 
     def patch_suite(suite):  # Odoo's own copy of unittest's suite (Odoo 16 and later)
-        suite.TestSuite._handleClassSetUp = limit(suite.TestSuite._handleClassSetUp, seconds)
+        set_up = limit(suite.TestSuite._handleClassSetUp, seconds)
+
+        def handle_class_setup(self, test, result):
+            set_up(self, test, result)
+            mark_not_run(self, type(test))
+
+        suite.TestSuite._handleClassSetUp = handle_class_setup
         suite.TestSuite._tearDownPreviousClass = limit(suite.TestSuite._tearDownPreviousClass, seconds)
+
+    reported = set()
+
+    def mark_not_run(tests, test_class):
+        """When the setUpClass of a class failed, Odoo runs none of its tests: each one is logged as failed, like a
+        test that ran (what jsa reads in the log), besides the error of the setUpClass that Odoo logs."""
+        if not getattr(test_class, '_classSetupFailed', False) or test_class in reported:
+            return
+        reported.add(test_class)
+        logger = logging.getLogger(test_class.__module__)
+        for test in tests:
+            if type(test) is test_class:
+                name = f"{test_class.__name__}.{getattr(test, '_testMethodName', '?')}"
+                logger.info("Starting %s ...", name)
+                logger.error("ERROR: %s\nnot run: the setUpClass of its class failed", name)
 
     def patch_result(result):
         start, stop = result.OdooTestResult.startTest, result.OdooTestResult.stopTest

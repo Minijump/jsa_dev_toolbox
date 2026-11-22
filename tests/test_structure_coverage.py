@@ -40,14 +40,19 @@ def test_log_info():
 
 def test_a_class_whose_setup_failed_and_odoo_stopped_answering():
     info = LogInfo()
-    for line in [  # as Odoo 17 and 19 log them (the setUpClass by its test suite)
+    for line in [  # as Odoo 17 and 19 log them (the setUpClass by its test suite, its tests by odoo_time_limit.py)
         "INFO db odoo.addons.c_mail.tests.test_x: Starting TestFine.test_a ...",
         "ERROR db odoo.tests.suite: ERROR: setUpClass (odoo.addons.c_mail.tests.test_hang.TestAHangingSetup)",
+        "INFO db odoo.addons.c_mail.tests.test_hang: Starting TestAHangingSetup.test_one ...",
+        "ERROR db odoo.addons.c_mail.tests.test_hang: ERROR: TestAHangingSetup.test_one",
         "ERROR db odoo.tests.suite: ERROR: tearDownClass (odoo.addons.c_sale.tests.test_y.TestY)",
         "INFO db odoo.addons.c_sale.tests.test_y: Starting TestY.test_b ...",
     ]:
         info.feed(line)
-    assert info.failed_tests == {"c_mail": ["TestAHangingSetup.setUpClass"], "c_sale": ["TestY.tearDownClass"]}
+    assert info.failed_tests == {"c_mail": ["TestAHangingSetup.setUpClass", "TestAHangingSetup.test_one"],
+                                 "c_sale": ["TestY.tearDownClass"]}
+    # the tests of the class are failed, test_a passed: 3 tests, 2 failed
+    assert info.tests == {"c_mail": 3, "c_sale": 2}
     assert not info.failed and info.culprit is None and info.testing == "c_sale"
     info.timed_out = True  # killed: its log stayed silent
     assert info.failed and info.culprit == "c_sale"  # the module being tested is left out, the others retried

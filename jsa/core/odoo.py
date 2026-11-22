@@ -51,7 +51,8 @@ class LogInfo:
         if m:
             self.fail(m.group(1), m.group(2))
         m = CLASS_FAIL_RE.search(line)
-        if m:
+        if m:  # counted as a test too: the tests passed are the tests minus the failed ones
+            self.tests[m.group(2)] += 1
             self.fail(m.group(2), f"{m.group(3)}.{m.group(1)}")
         if any(text in line for text in REGISTRY_FAILED):
             self.registry_failed = True
