@@ -33,6 +33,7 @@ TIME_LIMIT = Path(__file__).with_name("odoo_time_limit.py")  # run by the python
 # tests, a stopped test cleans up in seconds; otherwise a big module may load, the coverage be saved, for a while
 TEST_MARGIN = 1
 SILENCE_MARGIN = 5
+CANCEL_GRACE = 30  # seconds for a test whose query was cancelled to end, before Odoo is killed
 
 
 @dataclass
@@ -137,25 +138,42 @@ def install(profile: dict, db: str, modules: list[str], data_dir: Path, log_file
     """Install modules in a database with the odoo-bin of a profile, following Odoo's log live (it is appended to
     `log_file`). `python_args` come before odoo-bin (e.g. to run it under coverage), `odoo_args` after its options.
     `time_limit`: the minutes a test, or the setUpClass of a test class, may take: it is stopped and fails beyond
-    (odoo_time_limit.py runs odoo-bin). For what Python cannot stop (a query waiting for a lock): when no test starts
-    and no module loads for `time_limit` + TEST_MARGIN minutes during the tests (+ SILENCE_MARGIN otherwise), Odoo is
-    killed (`info.timed_out`, `info.stuck`). Progress, not any line: a stuck test may keep logging."""
+    (odoo_time_limit.py runs odoo-bin). The database errs on a lock waited for longer (lock_timeout, PGOPTIONS): the
+    test fails, the run goes on. For what Python cannot stop: when no test starts and no module loads for `time_limit`
+    + TEST_MARGIN minutes during the tests, the queries running on the database are cancelled (a long query: the test
+    fails, the run goes on); if that is not enough after CANCEL_GRACE seconds (or outside the tests, after
+    + SILENCE_MARGIN minutes), Odoo is killed (`info.timed_out`, `info.stuck`). Progress, not any line: a stuck test
+    may keep logging."""
     odoo_bin = [str(TIME_LIMIT), f"{time_limit:g}", profile['odoo_bin']] if time_limit else [profile['odoo_bin']]
     cmd = [profile['python'], *python_args, *odoo_bin, "-d", db, "--addons-path", ",".join(profile['addons_paths']),
            "--data-dir", str(data_dir), "--http-port", str(free_port()), "--stop-after-init", "--max-cron-threads=0",
            "--log-level=info", "-i", ",".join(modules), *odoo_args]
+    env = with_lock_timeout(config.odoo_env(profile), time_limit) if time_limit else config.odoo_env(profile)
     info, status, start = LogInfo(), StatusLine(interval=30), time.monotonic()
     with open(log_file, "a", encoding="utf-8") as log:
         log.write(f"\n===== {label}: {' '.join(cmd)}\n")
         # its own process group: what it starts (a browser for the tours) is stopped with it
-        proc = subprocess.Popen(cmd, cwd=cwd, env=config.odoo_env(profile), stdout=subprocess.PIPE,
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True)
         last_progress, waited = [time.monotonic()], [0.0]
         if time_limit:
             def watch():
+                cancelled_at = None  # the progress after which the queries were cancelled: done once per stall
                 while proc.poll() is None:
                     waited[0] = time_limit + (TEST_MARGIN if info.in_tests else SILENCE_MARGIN)
-                    if time.monotonic() - last_progress[0] > waited[0] * 60:
+                    stalled = time.monotonic() - last_progress[0]
+                    if info.in_tests and cancelled_at is None and stalled > waited[0] * 60:
+                        cancelled_at = last_progress[0]
+                        cancelled = cancel_queries(db)
+                        log.write(f"\n===== jsa: no test started for {waited[0]:g} min: {cancelled} query(ies) cancelled\n")
+                        if cancelled:
+                            typer.echo(f"⚠️ {info.running[1] if info.running else 'a test'}: no answer for {waited[0]:g} "
+                                       f"min, its query cancelled")
+                            time.sleep(CANCEL_GRACE)
+                            continue
+                    if cancelled_at is not None and last_progress[0] != cancelled_at:
+                        cancelled_at = None  # it moved on: a next stall is a new one
+                    elif stalled > waited[0] * 60:
                         info.timed_out = True
                         log.write(f"\n===== jsa: no test started and no module loaded for {waited[0]:g} min, Odoo killed\n")
                         _kill(proc)
@@ -196,6 +214,25 @@ def install(profile: dict, db: str, modules: list[str], data_dir: Path, log_file
     elif proc.returncode != 0 and not info.registry_failed and not info.failed_tests:
         info.crashed = True
     return info
+
+
+def with_lock_timeout(env: dict, minutes: float) -> dict:
+    """Odoo's environment where PostgreSQL gives up waiting for a lock after `minutes`: a test stuck on a lock fails
+    with an error instead of waiting forever where Python cannot stop it (libpq reads PGOPTIONS)."""
+    option = f"-c lock_timeout={max(1000, round(minutes * 60000))}"
+    return {**env, "PGOPTIONS": f"{env['PGOPTIONS']} {option}" if env.get("PGOPTIONS") else option}
+
+
+def cancel_queries(db: str) -> int:
+    """Cancel the queries running on a database (a test waiting on one): the test gets an error. How many."""
+    query = (f"SELECT count(pg_cancel_backend(pid)) FROM pg_stat_activity WHERE datname = '{db}' "
+             "AND state = 'active' AND pid <> pg_backend_pid()")
+    try:
+        res = subprocess.run(["psql", "-X", "-q", "-tA", "-d", "postgres", "-c", query],
+                             capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    return int(res.stdout.strip()) if res.returncode == 0 and res.stdout.strip().isdigit() else 0
 
 
 def _on_the_board(label: str, start: float, now_doing: dict, info: LogInfo) -> str:

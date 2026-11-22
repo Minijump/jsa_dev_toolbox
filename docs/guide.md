@@ -222,10 +222,12 @@ afterwards), runs their tests under `coverage`, and puts the results in the repo
   needing a module found in no addons path is left out before the install.
 - A test, or the `setUpClass` of a test class, taking more than 10 minutes (`test_timeout` of `[codebase]` in
   `config.toml`) is stopped and fails; a class whose `setUpClass` fails runs none of its tests, and each of them is
-  marked failed. A test catching every error cannot keep running. What Python cannot stop (a query waiting for a
-  lock): when no test starts for 1 minute more, Odoo is stopped and the tests run again without that test (or that
-  class), counted as failed; the rest of the addon is measured. Stopped while installing (no test running, 5 minutes
-  more), the addon is left out (it counts as 0%) and the others are tested again. The run says the limit it uses ("each test and setUpClass 10 min at most");
+  marked failed. A test catching every error cannot keep running. The database gives up a lock waited for longer
+  than the limit: the test fails with that error. When no test starts for 1 minute more, the queries still running
+  are cancelled: the test fails, the run goes on. Only what neither stops (stuck elsewhere): Odoo is stopped and the
+  tests run again without that test (or that class), counted as failed; the rest of the addon is measured. Stopped
+  while installing (no test running, 5 minutes more), the addon is left out (it counts as 0%) and the others are
+  tested again. `test_timeout` can be below a minute (`0.5`), but a slow test or setUpClass would then fail too. The run says the limit it uses ("each test and setUpClass 10 min at most");
   `test_timeout` written in another table of `config.toml` is reported, as it is not read there.
 - An addon that does not install (or is marked not installable) counts as 0% covered in the total: its tests never
   ran. Its lines and branches are counted as coverage would have measured them, so the coverage goes up when it

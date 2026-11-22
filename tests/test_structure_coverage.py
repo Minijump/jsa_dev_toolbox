@@ -38,6 +38,21 @@ def test_log_info():
     assert info.failed and info.culprit == "c_broken"
 
 
+def test_a_lock_waited_for_too_long_errs_and_a_long_query_is_cancelled(monkeypatch):
+    # PostgreSQL gives up waiting for a lock after the time limit of a test (libpq reads PGOPTIONS)
+    assert odoo.with_lock_timeout({"PATH": "x"}, 10)["PGOPTIONS"] == "-c lock_timeout=600000"
+    assert odoo.with_lock_timeout({"PGOPTIONS": "-c work_mem=64MB"}, 0.5)["PGOPTIONS"] == "-c work_mem=64MB -c lock_timeout=30000"
+    assert odoo.with_lock_timeout({}, 0.001)["PGOPTIONS"] == "-c lock_timeout=1000"  # never less than a second
+    import subprocess
+    asked = []
+    monkeypatch.setattr(odoo.subprocess, "run", lambda cmd, **kw: asked.append(cmd[-1]) or
+                        subprocess.CompletedProcess(cmd, 0, stdout="2\n", stderr=""))
+    assert odoo.cancel_queries("cov19_abc_whole") == 2
+    assert "pg_cancel_backend" in asked[0] and "datname = 'cov19_abc_whole'" in asked[0] and "state = 'active'" in asked[0]
+    monkeypatch.setattr(odoo.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="denied"))
+    assert odoo.cancel_queries("db") == 0  # not allowed (another role): Odoo is killed as before
+
+
 def test_reading_odoo_ends_when_it_exits_even_if_a_process_it_started_keeps_its_output():
     import subprocess
     import sys
