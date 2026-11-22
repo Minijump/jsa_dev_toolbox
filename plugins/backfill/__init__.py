@@ -9,7 +9,9 @@ A plugin made of a folder: its code (this file), and its own file next to it, so
 'jsa backfill' checks out each commit of backfill.toml in a temporary git worktree (your checkout is not touched),
 does what 'jsa structure -c -m whole' then '-m isolated' do (`modes` of backfill.toml) with the profile running the
 Odoo version of that code (read in its manifests: '17.0.1.0.0' is Odoo 17), and adds the runs to the history of the
-report at the date of the commit. Then it makes the report of today's code again, with these runs in its trends. The
+report at the date of the commit. In whole, unlike 'jsa structure', an addon that does not install makes them all
+not installable (coverage 0%, no test: all or nothing, like in production), with a single install per commit.
+Then it makes the report of today's code again, with these runs in its trends. The
 reports of each commit stay in codebase_analysis/backfill/<commit>/<mode>/. A commit already measured (in a mode) is
 skipped: a backfill that stopped goes on where it was. Each commit is a full measure: count hours for many commits.
 backfill.toml decides what the backfill part of the history holds: a commit (or a mode, an event) removed from it
@@ -364,8 +366,9 @@ def backfill(dry_run: bool = typer.Option(False, "--dry-run", help="Show the com
                 profile = in_worktree(codebase.coverage_profile_of(step.profile, conf), repo, tree)
                 out = config.ANALYSIS_DIR / "backfill" / step.sha[:12] / mode
                 try:
+                    # whole: one addon that cannot install fails them all, like in production (no retry without it)
                     run = codebase.analyse(conf, in_tree, out, step.profile, profile, codebase.Mode(mode), measure_all=True,
-                                           measures=measures, trends=trends)
+                                           measures=measures, trends=trends, all_or_nothing=True)
                 except typer.Exit:  # said why: the next measures are taken
                     run = None
                 took.append(time.monotonic() - began)

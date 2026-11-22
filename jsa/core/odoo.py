@@ -279,13 +279,14 @@ def _kill(proc: subprocess.Popen):
     proc.wait()
 
 
-def install_leaving_out(modules, graph, attempt: Callable[[list[str], list[Stuck]], LogInfo]) -> tuple[Optional[LogInfo], dict[str, str]]:
+def install_leaving_out(modules, graph, attempt: Callable[[list[str], list[Stuck]], LogInfo],
+                        all_or_nothing: bool = False) -> tuple[Optional[LogInfo], dict[str, str]]:
     """Install modules together: `attempt(modules, skipped)` installs them on a new database, without running the
     tests `skipped`, and gives what Odoo's log said. When Odoo stopped answering during a test (or a setUpClass), the
     same modules are tried again without it, and it counts as failed. When one of them fails to install (or Odoo
     stopped answering outside the tests), it is left out with the modules depending on it (`graph`), and the others
-    are tried again. Gives the log of the last attempt (None when no module was left to try) and the modules left
-    out: {module: why}."""
+    are tried again; `all_or_nothing`: none is tried again, they all count as not installable (like production).
+    Gives the log of the last attempt (None when no module was left to try) and the modules left out: {module: why}."""
     remaining, left_out, skipped = sorted(modules), {}, []
     while remaining:
         info = attempt(remaining, skipped)
@@ -299,10 +300,16 @@ def install_leaving_out(modules, graph, attempt: Callable[[list[str], list[Stuck
         if culprit not in remaining:  # installed, or failed for a reason that is none of them
             record_skipped(info, skipped)
             return info, left_out
-        excluded = [m for m in remaining if culprit in graph.closure([m])]
         why = "Odoo stopped answering during its tests" if info.timed_out else "install failed"
-        typer.echo(f"⚠️ {culprit} " + ("made Odoo stop answering during its tests" if info.timed_out else "failed to install")
-                   + ": left out" + (f", with {len(excluded) - 1} addon(s) depending on it" if len(excluded) > 1 else ""))
+        what = "made Odoo stop answering during its tests" if info.timed_out else "failed to install"
+        if all_or_nothing:  # like production: one addon that does not install stops them all
+            typer.echo(f"⚠️ {culprit} {what}: the {len(remaining)} addons count as not installable (all or nothing)")
+            left_out.update({m: why if m == culprit else f"not tested: {culprit} {what} (all or nothing)"
+                             for m in remaining})
+            return None, left_out
+        excluded = [m for m in remaining if culprit in graph.closure([m])]
+        typer.echo(f"⚠️ {culprit} {what}: left out"
+                   + (f", with {len(excluded) - 1} addon(s) depending on it" if len(excluded) > 1 else ""))
         left_out.update({m: why if m == culprit else f"depends on {culprit}" for m in excluded})
         remaining = [m for m in remaining if m not in excluded]
     return None, left_out

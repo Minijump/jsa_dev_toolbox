@@ -261,9 +261,12 @@ def coverage_profile_of(name: str, conf: dict) -> dict:
 
 def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str] = None,
             coverage_profile: Optional[dict] = None, mode: Mode = Mode.whole, measure_all: bool = False,
-            standard_tests: bool = False, measures: list[Measure] = (), trends: Optional[dict] = None) -> Optional[dict]:
+            standard_tests: bool = False, measures: list[Measure] = (), trends: Optional[dict] = None,
+            all_or_nothing: bool = False) -> Optional[dict]:
     """What 'jsa structure' does: the report of the addons of `roots`, written in `out_dir` (state.json, history.jsonl,
     report.html), with their tests run under coverage when `coverage_profile` (named `profile`) is given.
+    `all_or_nothing` (mode whole): an addon that cannot install makes them all not installable, as in production,
+    instead of being left out and the others tried again (jsa backfill).
     Returns the run added to the history, None when nothing was measured."""
     written = code_date(roots)  # before Odoo runs
     found = find_addons(roots)
@@ -315,7 +318,8 @@ def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str]
                        f"setUpClass {test_timeout(conf):g} min at most (Odoo log: {log_file})")
             measured, standard = coverage.measure(to_measure, graph, coverage_profile, Mode.isolated.value if mode == Mode.both
                                                   else mode.value, log_file, standard_tests=standard_tests,
-                                                  time_limit=test_timeout(conf))
+                                                  time_limit=test_timeout(conf),
+                                                  all_or_nothing=all_or_nothing and mode == Mode.whole)
             results.update(measured)
             if mode == Mode.both:
                 alone = {name: coverage.alone_part(results[name]) for name in installable}

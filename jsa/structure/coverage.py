@@ -185,14 +185,21 @@ def _results(runner: OdooRunner, db: str, info: LogInfo, addons: dict[str, Path]
 
 
 def run_whole(addons: dict[str, Path], graph: DependencyGraph, runner: OdooRunner, measure: bool = True,
-              standard_tests: bool = False) -> tuple[dict[str, Result], Optional[dict]]:
+              standard_tests: bool = False, all_or_nothing: bool = False) -> tuple[dict[str, Result], Optional[dict]]:
     """Results of the addons, and those of the tests of the standard modules ({module: {tests, failed}}, None when
-    they were not run)."""
+    they were not run). `all_or_nothing`: an addon that cannot install makes them all not installable (like in
+    production), instead of being left out and the others tried again."""
     # an addon needing a module found in no addons path (directly or through another addon) cannot install: left out
     # before, else the install of everything fails with no culprit in the log
     missing = {name: sorted(graph.closure([name]) - set(graph.depends)) for name in addons}
     results = {name: Result(NOT_INSTALLABLE, note=f"needs {', '.join(deps)}, in no addons path")
                for name, deps in missing.items() if deps}
+    if results and all_or_nothing:
+        first = min(results)
+        typer.echo(f"⚠️ {first} needs {', '.join(missing[first])}, in no addons path: the {len(addons)} addons count "
+                   "as not installable (all or nothing)")
+        return {**{name: Result(NOT_INSTALLABLE, note=f"not tested: {first} needs a module in no addons path (all or nothing)")
+                   for name in addons}, **results}, None
     addons = {name: path for name, path in addons.items() if name not in results}
     if not addons:
         return results, None
@@ -220,7 +227,7 @@ def run_whole(addons: dict[str, Path], graph: DependencyGraph, runner: OdooRunne
             runner.drop(db)
         return info
 
-    info, left_out = odoo.install_leaving_out(addons, graph, attempt)
+    info, left_out = odoo.install_leaving_out(addons, graph, attempt, all_or_nothing)
     results.update({m: Result(NOT_INSTALLABLE, note=why) for m, why in left_out.items()})
     kept, standard_results = {name: path for name, path in addons.items() if name not in left_out}, None
     if info and info.failed:
@@ -309,18 +316,19 @@ def describe(result: Result) -> str:
 
 def measure(addons: dict[str, Path], graph: DependencyGraph, profile: dict, mode: str, log_file: Path, *,
             measure_coverage: bool = True, standard_tests: bool = False, append: bool = False,
-            time_limit: Optional[float] = None) -> tuple[dict[str, Result], Optional[dict]]:
+            time_limit: Optional[float] = None, all_or_nothing: bool = False) -> tuple[dict[str, Result], Optional[dict]]:
     """Results of the given (installable) addons in mode 'whole' or 'isolated' ('both' is the two: see
     merge_together), and those of the tests of the standard modules (whole only; None when not run).
     Temporary databases and filestores are always cleaned up. `append`: add to the log of a previous measure.
-    `time_limit`: minutes a test, or the setUpClass of a test class, may take (see odoo.install)."""
+    `time_limit`: minutes a test, or the setUpClass of a test class, may take (see odoo.install).
+    `all_or_nothing` (whole): one addon that cannot install makes them all not installable (see run_whole)."""
     if not addons:
         return {}, None
     with tempfile.TemporaryDirectory(prefix="jsa_coverage_") as tmp:
         runner = OdooRunner(profile, Path(tmp), log_file, append, time_limit)
         try:
             if mode == "whole":
-                return run_whole(addons, graph, runner, measure_coverage, standard_tests)
+                return run_whole(addons, graph, runner, measure_coverage, standard_tests, all_or_nothing)
             return run_isolated(addons, graph, runner), None
         finally:
             runner.drop_all()

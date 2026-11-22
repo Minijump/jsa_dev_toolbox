@@ -170,7 +170,10 @@ then the other applications and modules. Useful before moving a database to the 
 Odoo version and profile). For each commit, in a temporary checkout (yours is not touched): the Odoo version is read
 in the manifests (`17.0.1.0.0`: Odoo 17), the profile running that version is used (or the one given in `[profiles]`
 of the file), and the addons are measured like `jsa structure -c -m whole`, then `-m isolated` (`modes` of the file
-to keep one). The runs go in the trends at the date of the commit; the reports of each commit stay in
+to keep one). One difference with `jsa structure`: in `whole`, an addon that does not install (or needs a module
+found in no addons path) makes all the addons count as not installable, as in production: coverage 0%, no test, a
+single install per commit (the broken addon's note says why, the others say "not tested"). A test that gets stuck is
+still skipped and counted failed, the others run. The runs go in the trends at the date of the commit; the reports of each commit stay in
 `codebase_analysis/backfill/<commit>/<mode>/`. A measure already taken is skipped, so a backfill that stopped goes on
 where it was, and a commit added to the file (anywhere: the charts follow the dates) is the only one measured.
 `backfill.toml` decides what the backfill part of the history holds: a commit, a mode or an event removed from it
@@ -219,7 +222,8 @@ afterwards), runs their tests under `coverage`, and puts the results in the repo
 | `-m both` | the coverage of `isolated`, then all addons tested together without coverage | both; a test failing only with all the addons is marked "(with all the addons)" |
 
 - An addon that fails to install is left out with the addons depending on it, and the others are tried again. One
-  needing a module found in no addons path is left out before the install.
+  needing a module found in no addons path is left out before the install. (`jsa backfill` stops there instead: all
+  or nothing.)
 - A test, or the `setUpClass` of a test class, taking more than 10 minutes (`test_timeout` of `[codebase]` in
   `config.toml`) is stopped and fails; a class whose `setUpClass` fails runs none of its tests, and each of them is
   marked failed. A test catching every error cannot keep running. The database gives up a lock waited for longer

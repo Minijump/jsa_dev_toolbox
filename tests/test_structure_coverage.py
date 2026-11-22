@@ -287,6 +287,33 @@ def test_whole_leaves_out_before_the_install_an_addon_needing_a_module_found_now
     assert coverage.run_whole(lost_only, graph, FakeRunner())[0]["c_lost"].coverage == NOT_INSTALLABLE
 
 
+def test_whole_all_or_nothing_stops_at_the_first_addon_that_cannot_install():
+    addons = {m: Path(m) for m in ("c_base", "c_mail", "c_mail_child")}
+    runner = FakeRunner(broken={"c_mail"})
+    results, _ = coverage.run_whole(addons, GRAPH, runner, all_or_nothing=True)
+    assert [install for _, install, test in runner.installs if test] == [("c_base", "c_mail", "c_mail_child")]  # once
+    assert all(r.coverage == NOT_INSTALLABLE for r in results.values())  # even c_base, which installs alone
+    assert results["c_mail"].note == "install failed"
+    assert results["c_base"].note == results["c_mail_child"].note == "not tested: c_mail failed to install (all or nothing)"
+    assert set(runner.dbs) == {"standard"}  # the try's database dropped (the snapshot goes with drop_all)
+    # a module found in no addons path: nothing is installed at all
+    graph = DependencyGraph({**GRAPH.depends, "c_lost": ["no_such_module"]}, custom=GRAPH.custom | {"c_lost"})
+    runner = FakeRunner()
+    results, _ = coverage.run_whole({m: Path(m) for m in ("c_base", "c_lost")}, graph, runner, all_or_nothing=True)
+    assert runner.installs == []
+    assert results["c_lost"].note == "needs no_such_module, in no addons path"
+    assert results["c_base"].coverage == NOT_INSTALLABLE and "c_lost" in results["c_base"].note
+    # a stuck test is still skipped and the tests run again: not an install error
+    tries = []
+
+    def attempt(modules, skipped):
+        tries.append([s.spec for s in skipped])
+        return killed("INFO db odoo.addons.c_sale.tests.test_y: Starting TestY.test_stuck ...") if not skipped else LogInfo()
+
+    last, left_out = odoo.install_leaving_out(["c_mail", "c_sale"], GRAPH_SALE, attempt, all_or_nothing=True)
+    assert tries == [[], ["/c_sale:TestY.test_stuck"]] and left_out == {} and not last.failed
+
+
 def test_whole_with_the_tests_of_the_standard_modules():
     addons = {m: Path(m) for m in ("c_base", "c_mail")}
     runner = FakeRunner(failing={"mail": ["TestMail.test_send"], "c_mail": ["TestMine.test_x"]})
