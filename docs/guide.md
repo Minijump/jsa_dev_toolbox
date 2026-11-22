@@ -172,7 +172,11 @@ in the manifests (`17.0.1.0.0`: Odoo 17), the profile running that version is us
 of the file), and the addons are measured like `jsa structure -c -m whole`, then `-m isolated` (`modes` of the file
 to keep one). The runs go in the trends at the date of the commit; the reports of each commit stay in
 `codebase_analysis/backfill/<commit>/<mode>/`. A measure already taken is skipped, so a backfill that stopped goes on
-where it was. Each commit is two full measures: count hours for many commits. Needs all the `addons_roots` in one
+where it was, and a commit added to the file (anywhere: the charts follow the dates) is the only one measured.
+`backfill.toml` decides what the backfill part of the history holds: a commit, a mode or an event removed from it
+leaves the history (`--dry-run` says how many lines); the runs of `jsa structure -c` and the events added by hand
+stay. A measure added to `config.toml` (`[[report.measures]]`) is counted on the commits already measured, in seconds:
+their code only, no install, no test. Each commit is two full measures: count hours for many commits. Needs all the `addons_roots` in one
 git repository. In a terminal, a block stays at the bottom while the messages scroll above it: which measure of how
 many (which commit, mode, time elapsed and left), what Odoo does (the addon, its tests so far) and the test that
 runs, with how long it has been running.

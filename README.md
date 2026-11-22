@@ -36,7 +36,7 @@ are already there: 2FA off, every password `admin`, ...). Put your dumps in `dum
 | `jsa report` | opens the last report | |
 | `jsa bisect <test> <good> [bad]` | finds the commit that broke a test (`/module.test_name`), even a test written today: it is taken from your checkout | `-p <profile>` (required): the Odoo that runs the test<br>`--fast`: install the other modules once and copy that database for each commit |
 | **Plugins** (shipped as examples, in `plugins/`) | | |
-| `jsa backfill` | measures the old commits listed in `plugins/backfill/backfill.toml` (each with the profile of its Odoo version, in modes whole and isolated) and adds them, with your events, to the trends of the report | `--dry-run`: show the commits, their Odoo version and profile, measure nothing |
+| `jsa backfill` | measures the old commits listed in `plugins/backfill/backfill.toml` (each with the profile of its Odoo version, in modes whole and isolated) for the trends of the report, with your events; the history follows the file, a measure added to `config.toml` is counted on the commits already measured | `--dry-run`: show the commits, their Odoo version and profile, what would be removed or counted; measure nothing |
 | `jsa quote-pdfs <db>` | puts back the PDF files of the quotation headers and footers (Odoo 18+), from `plugins/quote_pdfs/` | `-p <profile>` (required): the Odoo of the database<br>`--list`: only list them, with their id |
 | **UI tests** (optional) | | |
 | `jsa uitests setup` | downloads Robot Framework and a browser into `uitests/.env`; the commands below exist once it is done | |

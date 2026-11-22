@@ -1,5 +1,6 @@
 """The backfill plugin (plugins/backfill): what can be checked without Odoo. The real run: ~/jsa_testenv/backfill_check.sh."""
 import importlib.util
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -69,6 +70,42 @@ def test_events_are_added_once_and_measured_commits_are_skipped(tmp_path):
     assert backfill.add_events(history, events) == 0  # run again: not repeated
     lines = [{"commit": "aaa", "mode": "isolated"}, {"commit": "bbb", "mode": "whole"}, {"mode": "isolated"}]
     assert backfill.measured_commits(lines) == {("aaa", "isolated"), ("bbb", "whole")}  # per mode
+
+
+def test_the_history_follows_backfill_toml(tmp_path):
+    wanted, file_events = {("aaa", "whole"), ("bbb", "whole")}, {("2025-09-01", "Release 2.0")}
+    lines = [
+        {"commit": "aaa", "mode": "whole", "coverage": 50.0},          # in backfill.toml: kept
+        {"commit": "aaa", "mode": "isolated", "coverage": 40.0},       # a mode no longer measured: removed
+        {"commit": "ccc", "mode": "whole", "coverage": 30.0},          # a commit removed from the file: removed
+        {"mode": "whole", "coverage": 70.0, "date": "2026-11-22"},     # a run of 'jsa structure -c': kept
+        {"date": "2025-09-01", "event": "Release 2.0", "from": "backfill.toml"},   # still in the file: kept
+        {"date": "2025-10-01", "event": "Old release", "from": "backfill.toml"},   # removed from the file: removed
+        {"date": "2025-11-01", "event": "Added by hand"},                           # never in the file: kept
+    ]
+    history = tmp_path / "history.jsonl"
+    history.write_text("".join(json.dumps(line) + "\n" for line in lines) + "not json, edited by hand\n")
+    assert backfill.rewrite_history(history, lambda line: backfill.synced(line, wanted, file_events)) == 3
+    kept = history.read_text().splitlines()
+    assert [json.loads(text).get("coverage") or json.loads(text).get("event") for text in kept[:-1]] == \
+        [50.0, 70.0, "Release 2.0", "Added by hand"]
+    assert kept[-1] == "not json, edited by hand"  # left as it was
+    # an event written by a backfill of before (no "from"), still in the file: adopted, it will go with the file
+    assert backfill.synced({"date": "2025-09-01", "event": "Release 2.0"}, wanted, file_events)["from"] == "backfill.toml"
+
+
+def test_a_measure_added_later_is_counted_on_the_commits_already_measured(tmp_path):
+    lines = [{"commit": "aaa", "mode": "whole", "measures": {"TODO": 3}}, {"commit": "aaa", "mode": "isolated"},
+             {"commit": "bbb", "mode": "whole", "measures": {"TODO": 2, "sudo": 1}},
+             {"commit": "zzz", "mode": "whole"}, {"date": "2025-09-01", "event": "x"}]
+    missing = backfill.missing_measures(lines, {"aaa", "bbb"}, ["TODO", "sudo"])
+    assert missing == {"aaa": ["TODO", "sudo"]}  # zzz: not in backfill.toml; bbb: complete
+    history = tmp_path / "history.jsonl"
+    history.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    backfill.rewrite_history(history, lambda line: backfill.with_counts(line, {"aaa": {"sudo": 5}}))
+    after = [json.loads(text) for text in history.read_text().splitlines()]
+    assert after[0]["measures"] == {"TODO": 3, "sudo": 5} and after[1]["measures"] == {"sudo": 5}
+    assert after[2] == lines[2] and after[4] == lines[4]
 
 
 def test_the_worktree_moves_through_the_commits_and_leaves_the_checkout_alone(tmp_path):
