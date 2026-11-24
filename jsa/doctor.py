@@ -9,7 +9,7 @@ import typer
 from . import self_update
 from .core import config, pg, plugins
 from .core.addons import find_addons
-from .db import restore, restore_sql
+from .db import restore, restore_sql, restore_steps
 from .structure import coverage
 from .uitests import commands as uitests
 
@@ -88,11 +88,15 @@ def check_config() -> Iterator[Check]:
         yield FAIL, "📄", "config.toml is not valid (see the message above)"
         return
     yield OK, "📄", "config.toml is valid"
-    steps = [s for s in conf.get('restore', {}).get('extra_steps', []) if isinstance(s, dict) and s.get('enabled', True)]
-    if steps:
-        yield OK, "🧼", f"{len(steps)} sanitize step(s) run by restore"
+    try:
+        steps, _ = restore_steps.steps_from_config(conf)
+    except typer.Exit:
+        yield FAIL, "🧼", "The restore steps of config.toml are not valid (see the message above)"
     else:
-        yield WARN, "🧼", "No [[restore.extra_steps]]: restore leaves passwords, 2FA and expiration date unchanged (see config.example.toml)"
+        if steps:
+            yield OK, "🧼", f"{len(steps)} sanitize step(s) run by restore (jsa's standard ones and yours)"
+        else:
+            yield WARN, "🧼", "Every restore step is switched off: restore leaves passwords, 2FA and expiration date unchanged"
     roots = config.addons_roots(conf)
     missing = [str(r) for r in roots if not r.is_dir()]
     if missing:

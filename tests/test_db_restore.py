@@ -241,7 +241,7 @@ def test_steps_limited_to_some_versions_of_odoo(monkeypatch, capsys):
     conf = {"restore": {"extra_steps": [{"label": "Quote PDFs", "command": "quote-pdfs -p 19", "odoo_versions": [19]},
                                         {"label": "Old column", "sql": "UPDATE a;", "odoo_versions": ["16.0", 17]},
                                         {"label": "Always", "sql": "UPDATE b;"}]}}
-    steps, _ = restore_steps.steps_from_config(conf)
+    steps = restore_steps.steps_from_config(conf)[0][-3:]  # after jsa's standard steps
     assert [s.odoo_versions for s in steps] == [(19,), (16, 17), ()]
     with pytest.raises(typer.Exit):
         restore_steps.steps_from_config({"restore": {"extra_steps": [{"sql": "SELECT 1;", "odoo_versions": ["latest"]}]}})
@@ -267,13 +267,34 @@ def test_steps_limited_to_some_versions_of_odoo(monkeypatch, capsys):
     assert queries == ["UPDATE b;"]
 
 
+STANDARD = ["Mandatory 2FA policy removed", "2FA disabled for all users", "Admin login set to 'admin'",
+            "All passwords set to 'admin'", "Expiration date set to 2135-12-31"]
+
+
 def test_steps_from_config():
     conf = {"restore": {"extra_steps": [{"label": "Mail off", "sql": "UPDATE x;", "requires": ["x"]},
                                         {"label": "Passwords", "sql": "UPDATE y;", "enabled": False}]}}
-    assert restore_steps.steps_from_config(conf) == ([Step("Mail off", "UPDATE x;", ("x",))], ["Passwords"])
-    assert restore_steps.steps_from_config({}) == ([], [])
+    steps, disabled = restore_steps.steps_from_config(conf)
+    assert [s.label for s in steps] == STANDARD + ["Mail off"] and steps[-1] == Step("Mail off", "UPDATE x;", ("x",))
+    assert disabled == ["Outgoing mail servers disabled", "Passwords"]
+    assert [s.label for s in restore_steps.steps_from_config({})[0]] == STANDARD  # nothing in config.toml: the standard ones
     with pytest.raises(typer.Exit):
         restore_steps.steps_from_config({"restore": {"extra_steps": [{"label": "no sql"}]}})
+
+
+def test_a_step_with_the_label_of_a_standard_one_changes_it():
+    steps, disabled = restore_steps.steps_from_config({"restore": {"extra_steps": [
+        {"label": "Outgoing mail servers disabled", "enabled": True},       # switched on, its SQL kept
+        {"label": "All passwords set to 'admin'", "enabled": False},        # switched off
+        {"label": "Expiration date set to 2135-12-31", "sql": "SELECT 1;"},  # its SQL replaced
+        {"label": "SAML off", "sql": "UPDATE saml;"}]}})
+    assert [s.label for s in steps] == [*STANDARD[:3], STANDARD[4], "Outgoing mail servers disabled", "SAML off"]
+    assert steps[4].sql == "UPDATE ir_mail_server SET active = false;" and steps[4].requires == ("ir_mail_server",)
+    assert steps[3].sql == "SELECT 1;" and disabled == ["All passwords set to 'admin'"]
+    # a config.toml that copied the standard steps (before jsa 0.34): the same steps as before, none twice
+    copied = {"restore": {"extra_steps": restore_steps.standard_steps() + [{"label": "SAML off", "sql": "UPDATE saml;"}]}}
+    steps, disabled = restore_steps.steps_from_config(copied)
+    assert [s.label for s in steps] == STANDARD + ["SAML off"] and disabled == ["Outgoing mail servers disabled"]
 
 
 def test_a_misspelled_key_is_refused(capsys):
@@ -283,8 +304,9 @@ def test_a_misspelled_key_is_refused(capsys):
     assert "#1 has the key(s) odoo_version, which do not exist" in capsys.readouterr().out
 
 
-def test_example_config_has_the_usual_steps():
+def test_the_standard_steps_with_the_example_config():
     example = config.load_config(path=Path(__file__).parent.parent / "config.example.toml")
+    assert "extra_steps" not in example.get("restore", {})  # the standard steps are jsa's, not copied there anymore
     steps, disabled = restore_steps.steps_from_config(example)
     assert [s.label for s in steps] == ["Mandatory 2FA policy removed", "2FA disabled for all users", "Admin login set to 'admin'",
                                         "All passwords set to 'admin'", "Expiration date set to 2135-12-31"]
@@ -293,7 +315,7 @@ def test_example_config_has_the_usual_steps():
 
 def test_no_step_configured_warns(capsys):
     restore_steps.run_steps("db", [])  # no database call: nothing to run
-    assert "No sanitize step in config.toml" in capsys.readouterr().out
+    assert "No sanitize step: every one is switched off" in capsys.readouterr().out
 
 
 def test_a_step_can_be_a_command(capsys):
@@ -301,8 +323,8 @@ def test_a_step_can_be_a_command(capsys):
                                         {"command": "hello", "requires": ["some_table"]},
                                         {"label": "Off", "command": "hello", "enabled": False}]}}
     steps, disabled = restore_steps.steps_from_config(conf)
-    assert steps == [Step("Cover set", command="set-cover --company 1"), Step("jsa hello", requires=("some_table",), command="hello")]
-    assert disabled == ["Off"]
+    assert steps[-2:] == [Step("Cover set", command="set-cover --company 1"), Step("jsa hello", requires=("some_table",), command="hello")]
+    assert disabled == ["Outgoing mail servers disabled", "Off"]
     with pytest.raises(typer.Exit):  # a step is SQL or a command, not both
         restore_steps.steps_from_config({"restore": {"extra_steps": [{"sql": "SELECT 1;", "command": "hello"}]}})
 

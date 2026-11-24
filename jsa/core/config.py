@@ -60,21 +60,29 @@ def load_config(required: bool = True, path: Optional[Path] = None) -> dict[str,
 
 
 def load_profile(profile: str, config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    profiles = (config if config is not None else load_config()).get('profiles', {})
+    """A profile of config.toml: python and odoo_root are needed; odoo_bin is <odoo_root>/odoo-bin unless given;
+    addons_paths is [codebase] addons_roots, then the enterprise folder, then <odoo_root>/addons, unless given (a
+    profile using other checkouts, during a migration)."""
+    config = config if config is not None else load_config()
+    profiles = config.get('profiles', {})
     conf = profiles.get(profile)
     if not isinstance(conf, dict):
         available = ", ".join(sorted(profiles.keys())) if isinstance(profiles, dict) and profiles else "none"
         typer.echo(f"❌ Unknown profile '{profile}'. Available profiles: {available}")
         raise typer.Exit(code=1)
 
-    required_keys = ('python', 'odoo_root', 'odoo_bin', 'addons_paths')
+    required_keys = ('python', 'odoo_root')
     missing = [k for k in required_keys if k not in conf]
     if missing:
         typer.echo(f"❌ Profile '{profile}' is missing required keys: {', '.join(missing)}")
         raise typer.Exit(code=1)
 
+    odoo_root = Path(conf['odoo_root']).expanduser()
+    enterprise = Path(conf['enterprise']).expanduser() if conf.get('enterprise') else None
+    addons_paths = conf.get('addons_paths') or [*addons_roots(config), *([enterprise] if enterprise else []),
+                                                odoo_root / "addons"]
     python_exec = Path(conf['python']).expanduser()
-    odoo_bin = Path(conf['odoo_bin']).expanduser()
+    odoo_bin = Path(conf.get('odoo_bin') or odoo_root / "odoo-bin").expanduser()
     if not python_exec.exists():
         typer.echo(f"❌ Python executable not found for profile '{profile}': {python_exec}")
         raise typer.Exit(code=1)
@@ -84,10 +92,10 @@ def load_profile(profile: str, config: Optional[dict[str, Any]] = None) -> dict[
 
     return {
         'python': str(python_exec),
-        'odoo_root': str(Path(conf['odoo_root']).expanduser()),
+        'odoo_root': str(odoo_root),
         'odoo_bin': str(odoo_bin),
-        'enterprise': str(Path(conf['enterprise']).expanduser()) if conf.get('enterprise') else None,
-        'addons_paths': [str(Path(p).expanduser()) for p in conf['addons_paths']],
+        'enterprise': str(enterprise) if enterprise else None,
+        'addons_paths': [str(Path(p).expanduser()) for p in addons_paths],
         'db_prefix': str(conf.get('db_prefix', 'cov')),
     }
 

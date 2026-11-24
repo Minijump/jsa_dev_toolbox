@@ -1,5 +1,6 @@
 import importlib.metadata
 import sys
+from pathlib import Path
 
 import pytest
 import typer
@@ -30,10 +31,22 @@ def test_load_profile(tmp_path, capsys):
     conf = {"profiles": {"17": {"python": str(python), "odoo_root": "/odoo", "odoo_bin": str(odoo_bin),
                                 "addons_paths": ["/a"]}}}
     profile = config.load_profile("17", conf)
-    assert profile["enterprise"] is None and profile["db_prefix"] == "cov"
+    assert profile["enterprise"] is None and profile["db_prefix"] == "cov" and profile["addons_paths"] == [str(Path("/a"))]
     with pytest.raises(typer.Exit):
         config.load_profile("19", conf)
     assert "Available profiles: 17" in capsys.readouterr().out
+    # odoo_bin and addons_paths can be left out: odoo-bin of odoo_root; addons_roots, enterprise, odoo_root/addons
+    root = tmp_path / "odoo"
+    root.mkdir()
+    (root / "odoo-bin").touch()
+    short = {"codebase": {"addons_roots": ["/mine", "/oca"]},
+             "profiles": {"19": {"python": str(python), "odoo_root": str(root), "enterprise": "/ent"}}}
+    profile = config.load_profile("19", short)
+    assert profile["odoo_bin"] == str(root / "odoo-bin")
+    assert profile["addons_paths"] == [str(Path(p)) for p in ("/mine", "/oca", "/ent", root / "addons")]
+    with pytest.raises(typer.Exit):
+        config.load_profile("19", {"profiles": {"19": {"python": str(python)}}})
+    assert "missing required keys: odoo_root" in capsys.readouterr().out
 
 
 class Screen:

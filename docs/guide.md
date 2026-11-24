@@ -63,12 +63,15 @@ git: `config.toml`, `dumps/`, `plugins/` (your commands), `uitests/` (your ui te
 | Key | |
 |---|---|
 | `python` | the Python that runs this Odoo (it needs `coverage` 7.6 or later installed for `structure -c`) |
-| `odoo_root`, `odoo_bin` | the Odoo sources and their `odoo-bin` |
-| `addons_paths` | as in Odoo's own configuration: your addons, then Odoo's (and enterprise's) |
+| `odoo_root` | the Odoo sources |
 | `enterprise` | optional: the enterprise folder. Its modules are the "enterprise modules" flagged by the report |
-| `db_prefix` | prefix of the temporary databases of the coverage runs (default `cov`) |
+| `odoo_bin` | optional: default `odoo-bin` in `odoo_root` |
+| `addons_paths` | optional: default your `addons_roots`, then `enterprise`, then `<odoo_root>/addons`. Give it when this Odoo uses other checkouts of your addons (two branches during a migration) |
+| `db_prefix` | optional: prefix of the temporary databases of the coverage runs (default `cov`) |
 
-**`[[restore.extra_steps]]`**: what `jsa restore` does to a restored database, one block per step, in this order.
+**`[[restore.extra_steps]]`**: what `jsa restore` does to a restored database, after jsa's standard steps
+(`jsa/db/restore_steps.toml`: 2FA off, login `admin` / password `admin`, expiration date; outgoing mail servers off,
+itself switched off), one block per step, in this order.
 
 | Key | |
 |---|---|
@@ -80,8 +83,10 @@ git: `config.toml`, `dumps/`, `plugins/` (your commands), `uitests/` (your ui te
 | `enabled` | `false` keeps the step in the file without running it |
 
 The SQL steps run in one transaction (all or nothing), then the commands one by one. A failing command is reported
-and the next steps still run. A misspelled key is refused before anything starts. The example file has the usual
-steps: 2FA off, login `admin` / password `admin`, expiration date, outgoing mail servers (switched off by default).
+and the next steps still run. A misspelled key is refused before anything starts. A step with the label of a
+standard one changes it rather than adding one: `enabled = false` switches it off, `enabled = true` switches on the
+mail servers step, `sql = "..."` replaces its SQL. So a `config.toml` that still holds copies of the standard steps
+(from before jsa 0.34) does the same as before, and its copies can be deleted.
 
 **`[uitests]`**: see [UI tests](#ui-tests). **`plugins_dirs`**: see [plugins](#your-own-commands-plugins).
 

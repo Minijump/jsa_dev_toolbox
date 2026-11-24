@@ -1,7 +1,15 @@
 """Make a production database safe and convenient to use locally.
 
-Every step is defined in config.toml (config.example.toml has the usual ones: 2FA off, admin login, passwords,
-expiration date), so each can be changed or switched off:
+jsa's standard steps (restore_steps.toml, next to this file: 2FA off, admin login, passwords, expiration date, mail
+servers off but switched off itself) run first, then those of config.toml. A step of config.toml with the label of a
+standard one replaces its keys (enabled = false switches it off, enabled = true on, sql = "..." changes it), so a
+config.toml that copied the standard steps (before jsa 0.34) keeps doing the same, nothing runs twice:
+
+    [[restore.extra_steps]]
+    label = "Outgoing mail servers disabled"   # a standard step, switched on
+    enabled = true
+
+Your own steps, after the standard ones:
 
     [[restore.extra_steps]]
     label = "Outgoing mail servers disabled"
@@ -20,11 +28,14 @@ calls to Odoo...). It is written as after 'jsa', and called with the name of the
 The SQL steps run first, all in one transaction; then the commands, one by one, in the order of the file.
 """
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 import typer
 
-from ..core import commands, pg
+from ..core import commands, config, pg
+
+STANDARD = Path(__file__).with_name("restore_steps.toml")
 
 EXPIRATION_DATE = "2135-12-31"
 KEYS = ('label', 'sql', 'command', 'requires', 'odoo_versions', 'enabled')  # what a step can say
@@ -49,12 +60,18 @@ EXPIRATION_STEP = Step(
 )
 
 
-def steps_from_config(config: dict[str, Any]) -> tuple[list[Step], list[str]]:
-    """Return (steps to run, labels of the disabled steps)."""
-    steps, disabled = [], []
-    for i, raw in enumerate(config.get('restore', {}).get('extra_steps', [])):
-        if not isinstance(raw, dict) or bool(raw.get('sql')) == bool(raw.get('command')):
-            typer.echo(f"❌ config.toml: [[restore.extra_steps]] #{i + 1} needs a 'sql' key or a 'command' key (one of them)")
+def standard_steps() -> list[dict]:
+    """jsa's standard steps (restore_steps.toml)."""
+    return config.tomllib.loads(STANDARD.read_text(encoding="utf-8"))["steps"]
+
+
+def steps_from_config(conf: dict[str, Any]) -> tuple[list[Step], list[str]]:
+    """Return (steps to run, labels of the disabled steps): the standard steps, each one completed by the step of
+    config.toml with its label, then the other steps of config.toml."""
+    own = conf.get('restore', {}).get('extra_steps', [])
+    for i, raw in enumerate(own):
+        if not isinstance(raw, dict):
+            typer.echo(f"❌ config.toml: [[restore.extra_steps]] #{i + 1} must be a table: label = \"...\", sql = \"...\"")
             raise typer.Exit(code=1)
         # a misspelled key would be ignored without a word: e.g. a step for one version of Odoo running on all of them
         unknown = sorted(set(raw) - set(KEYS))
@@ -62,8 +79,18 @@ def steps_from_config(config: dict[str, Any]) -> tuple[list[Step], list[str]]:
             typer.echo(f"❌ config.toml: [[restore.extra_steps]] #{i + 1} has the key(s) {', '.join(unknown)}, which do not "
                        f"exist (misspelled?). The keys of a step: {', '.join(KEYS)}")
             raise typer.Exit(code=1)
+    standard = standard_steps()
+    labels = {step['label'] for step in standard}
+    mine = {raw['label']: raw for raw in own if raw.get('label') in labels}
+    merged = [{**step, **mine.get(step['label'], {})} for step in standard] + [
+        raw for raw in own if raw.get('label') not in labels]
+    steps, disabled = [], []
+    for raw in merged:
         sql, command = raw.get('sql', ""), raw.get('command', "")
         label = raw.get('label', sql or f"jsa {command}")
+        if bool(sql) == bool(command):
+            typer.echo(f"❌ config.toml: the restore step '{label}' needs a 'sql' key or a 'command' key (one of them)")
+            raise typer.Exit(code=1)
         step = Step(label, sql, tuple(raw.get('requires', ())), command, _versions(raw.get('odoo_versions', []), label))
         if raw.get('enabled', True):
             steps.append(step)
@@ -136,8 +163,8 @@ def run_steps(db_name: str, steps: list[Step], disabled: list[str] = (),
     Gives the labels of the command steps that failed: one does not stop the others."""
     typer.echo("🔄 Sanitizing database...")
     if not steps and not disabled:
-        typer.echo("⚠️ No sanitize step in config.toml: the database is a raw copy (passwords, 2FA, expiration date "
-                   "unchanged). Copy the [[restore.extra_steps]] of config.example.toml to your config.toml")
+        typer.echo("⚠️ No sanitize step: every one is switched off (enabled = false), the database is a raw copy "
+                   "(passwords, 2FA, expiration date unchanged)")
         return []
     version = database_version(db_name) if any(step.odoo_versions for step in steps) else None
     to_run, skipped = split_steps(steps, _existing_objects(db_name, steps), version)
@@ -157,5 +184,5 @@ def run_steps(db_name: str, steps: list[Step], disabled: list[str] = (),
     for step, why in skipped:
         typer.echo(f"⏭️ {step.label}: skipped ({why})")
     for label in disabled:
-        typer.echo(f"💤 {label}: disabled in config.toml")
+        typer.echo(f"💤 {label}: disabled (enabled = false)")
     return failed
