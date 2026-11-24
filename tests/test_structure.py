@@ -76,7 +76,8 @@ def test_status_and_summary():
     assert [report.status(NEW[n]) for n in ("a", "b", "c", "new")] == ["failing", "not_installable", "no_tests", "not_measured"]
     summary = report.summarize(NEW)
     assert summary == {"addons": 4, "loc": 26, "measured": 3, "coverage": 90.0,  # 360 / 400: weighted by size
-                       "tests": 5, "failed": 1, "not_installable": 1, "no_tests": 1, "enterprise": None}
+                       "tests": 5, "failed": 1, "not_installable": 1, "no_tests": 1, "enterprise": None,
+                       "security": None}  # a state made before the security review
     assert report.summarize({})["coverage"] is None
 
 

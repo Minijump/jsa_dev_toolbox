@@ -16,6 +16,8 @@ plugins/backfill/*
 !plugins/backfill/*.sample
 uitests/*
 !uitests/*.sample
+reviewed.toml
+roadmap_internal.md
 
 # generated
 codebase_analysis/

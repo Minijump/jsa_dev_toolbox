@@ -3,7 +3,7 @@ import fnmatch
 import hashlib
 import re
 import subprocess
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -13,7 +13,7 @@ import typer
 
 from ..core import config, odoo, ui
 from ..core.addons import DependencyGraph, files_digest, find_addons, read_manifests, standard_depends
-from . import coverage, report, report_html
+from . import coverage, report, report_html, security
 
 LOC_EXTENSIONS = {'.py', '.xml', '.js', '.scss', '.css', '.csv'}
 LOC_EXCLUDED_DIRS = {'migrations', 'tests', 'i18n'}
@@ -268,6 +268,7 @@ def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str]
     `all_or_nothing` (mode whole): an addon that cannot install makes them all not installable, as in production,
     instead of being left out and the others tried again (jsa backfill).
     Returns the run added to the history, None when nothing was measured."""
+    reviewed = security.load_reviewed(config.REVIEWED_FILE)  # a mistake there stops before anything is measured
     written = code_date(roots)  # before Odoo runs
     found = find_addons(roots)
     manifests = read_manifests(found)
@@ -347,13 +348,20 @@ def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str]
         state_extra[name]['enterprise'] = None if enterprise is None else sorted(set(dependencies[name]) & enterprise)
         if state_extra[name]['enterprise']:
             typer.echo(f"⚠️ {name} depends on Odoo enterprise: {', '.join(state_extra[name]['enterprise'])}")
+    # the places to review for security, read in the code (seconds): every run, with or without -c
+    findings, unreadable = security.scan(addons, code_files)
+    for name in addons:
+        state_extra[name]['security'] = [asdict(f) for f in findings if f.addon == name]
+    if unreadable:
+        typer.echo(f"⚠️ Security review: {len(unreadable)} python file(s) not read (syntax error): "
+                   + ", ".join(unreadable[:3]) + (", ..." if len(unreadable) > 3 else ""))
 
     if standard:
         failed = sum(len(r['failed']) for r in standard.values())
         typer.echo(f"{'⚠️' if failed else '✅'} Standard modules: {sum(r['tests'] for r in standard.values())} test(s) "
                    f"in {len(standard)} module(s), {failed} failed")
     report.write_reports(loc, dependencies, results, out_dir, state_extra, run, standard,
-                         count_measures(addons, measures), trends)
+                         count_measures(addons, measures), trends, reviewed)
     return run
 
 

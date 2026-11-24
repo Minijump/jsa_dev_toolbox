@@ -16,7 +16,8 @@ reports of each commit stay in codebase_analysis/backfill/<commit>/<mode>/. A co
 skipped: a backfill that stopped goes on where it was. Each commit is a full measure: count hours for many commits.
 backfill.toml decides what the backfill part of the history holds: a commit (or a mode, an event) removed from it
 leaves the history; the runs of 'jsa structure -c' and the events added by hand stay. A measure added to config.toml
-([[report.measures]]) is counted on the commits already measured, in seconds (no install, no test).
+([[report.measures]]) is counted on the commits already measured, in seconds (no install, no test); so is the
+security review on the commits measured before jsa had it.
 'jsa backfill --dry-run' shows the commits, their Odoo version and profile, without measuring anything.
 
 Requires all the addons_roots of config.toml in one git repository. Uses jsa's own code (jsa.structure): it moves
@@ -40,7 +41,7 @@ import typer
 from jsa import config, ui
 from jsa.core import odoo
 from jsa.core.addons import find_addons, read_manifests
-from jsa.structure import codebase, report
+from jsa.structure import codebase, report, security
 from jsa.structure.bisect import in_worktree
 
 FOLDER = Path(__file__).resolve().parent
@@ -259,6 +260,19 @@ def with_counts(line: dict, counts: dict[str, dict[str, int]]) -> dict:
     return {**line, 'measures': {**(line.get('measures') or {}), **counts[line['commit']]}}
 
 
+def missing_security(history: list[dict], commits: set[str]) -> set[str]:
+    """The commits already measured whose runs have no security review (measured before jsa had it)."""
+    return {line['commit'] for line in history
+            if line.get('commit') in commits and not line.get('event') and line.get('security') is None}
+
+
+def with_security(line: dict, found: dict[str, dict]) -> dict:
+    """A line of the history with the security review just made on its commit ({commit: {rule: ids}})."""
+    if line.get('commit') not in found or line.get('event') or line.get('security') is not None:
+        return line
+    return {**line, 'security': found[line['commit']]}
+
+
 def where(number: int, total: int, step: "Step", mode: str, start: float, took: list[float]) -> str:
     """The top line of the board: which measure, of which commit, since when, and the time left (the average of
     the measures taken so far)."""
@@ -328,13 +342,17 @@ def backfill(dry_run: bool = typer.Option(False, "--dry-run", help="Show the com
         file_events = {(str(event['date']), event['event']) for event in events}
         history = report.load_history(history_file)
         leaving = [line for line in history if synced(line, wanted, file_events) is None]
-        to_count = missing_measures(history, {sha for sha, mode in wanted if (sha, mode) in done}, [m.label for m in measures])
+        measured = {sha for sha, mode in wanted if (sha, mode) in done}
+        to_count = missing_measures(history, measured, [m.label for m in measures])
+        to_review = missing_security(history, measured)
         if leaving:
             typer.echo(f"🗑️ {len(leaving)} line(s) of the history no longer in backfill.toml (commits, modes, events): "
                        + ("would be removed" if dry_run else "removed"))
         if to_count:
             labels = sorted({label for missing in to_count.values() for label in missing})
             typer.echo(f"🔢 {', '.join(labels)}: to count on {len(to_count)} commit(s) already measured (no test run)")
+        if to_review:
+            typer.echo(f"🔒 Security review: to make on {len(to_review)} commit(s) already measured (no test run)")
         if dry_run:
             typer.echo(f"ℹ️ Dry run: nothing measured. {len(events)} event(s) in backfill.toml")
             return
@@ -353,6 +371,16 @@ def backfill(dry_run: bool = typer.Option(False, "--dry-run", help="Show the com
                                                       [m for m in measures if m.label in labels])
                 typer.echo(f"   🔢 {sha[:9]}: " + ", ".join(f"{label} {count:,}" for label, count in counts[sha].items()))
             rewrite_history(history_file, lambda line: with_counts(line, counts))
+        if to_review:  # in seconds too: the code of each commit is read
+            found = {}
+            for sha in sorted(to_review):
+                checkout(tree, sha)
+                addons_found = find_addons(in_tree)
+                manifests = read_manifests(addons_found, warn=False)
+                findings, _ = security.scan({a.name: a for a in addons_found if a.name in manifests}, codebase.code_files)
+                found[sha] = security.by_rule(vars(f) for f in findings)
+                typer.echo(f"   🔒 {sha[:9]}: {len(findings)} finding(s)")
+            rewrite_history(history_file, lambda line: with_security(line, found))
 
         failed, start, took = [], time.monotonic(), []  # took: how long each measure lasted, for the time left
         with ui.board() as board:  # in a terminal: where it is, kept at the bottom (see ui.board)

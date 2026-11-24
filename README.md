@@ -32,7 +32,7 @@ are already there: 2FA off, every password `admin`, ...). Put your dumps in `dum
 | `jsa enterprise <db>` | the enterprise modules installed, and which of your modules need them | |
 | `jsa exp-date <db>` | pushes the expiration date to 2135 (`restore` already does it) | |
 | **Codebase** | | |
-| `jsa structure` | the report of your addons: lines of code, dependency graph, enterprise dependencies, trends | `-c -p <profile>`: install and test the addons, measure their coverage<br>`-m whole`, `isolated` or `both`: all addons together (default), each one alone with its dependencies, or both<br>`--standard-tests`: also run the tests of the standard modules they need (long)<br>`-a`, `--all`: measure again the addons that did not change<br>`-o`, `--open`: open the report when it is ready |
+| `jsa structure` | the report of your addons: lines of code, dependency graph, enterprise dependencies, security review, trends | `-c -p <profile>`: install and test the addons, measure their coverage<br>`-m whole`, `isolated` or `both`: all addons together (default), each one alone with its dependencies, or both<br>`--standard-tests`: also run the tests of the standard modules they need (long)<br>`-a`, `--all`: measure again the addons that did not change<br>`-o`, `--open`: open the report when it is ready |
 | `jsa report` | opens the last report | |
 | `jsa bisect <test> <good> [bad]` | finds the commit that broke a test (`/module.test_name`), even a test written today: it is taken from your checkout | `-p <profile>` (required): the Odoo that runs the test<br>`--fast`: install the other modules once and copy that database for each commit |
 | **Plugins** (shipped as examples, in `plugins/`) | | |

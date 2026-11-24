@@ -38,6 +38,7 @@ CONFIG_FILE = TOOLBOX_DIR / "config.toml"
 DUMPS_DIR = TOOLBOX_DIR / "dumps"
 ANALYSIS_DIR = TOOLBOX_DIR / "codebase_analysis"
 PLUGINS_DIR = TOOLBOX_DIR / "plugins"
+REVIEWED_FILE = TOOLBOX_DIR / "reviewed.toml"  # findings of the security review looked at and found fine
 # Odoo data_dir (holds the filestores) when not configured otherwise
 DEFAULT_DATA_DIR = Path.home() / ".local" / "share" / "Odoo"
 

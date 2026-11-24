@@ -1,7 +1,8 @@
 """The codebase report page: one self-contained HTML file (no network, no external library).
 
-Sections: totals, what needs attention, changes since the previous run, one sortable table of the addons (details on
-click), the dependency graph (with or without standard modules) and the trend of the measured runs.
+Sections: totals, what needs attention, changes since the previous run, the security review (security.py), one
+sortable table of the addons (details on click), the dependency graph (with or without standard modules) and the trend
+of the measured runs.
 Coverage is a continuous color from red (0%) to green (100%). States use a symbol + a label, never the color alone.
 """
 import json
@@ -10,7 +11,7 @@ from datetime import datetime
 from html import escape as E
 from typing import Optional
 
-from . import report
+from . import report, security
 from .coverage import NO_REPORT, NOT_INSTALLABLE
 
 # status: (label, symbol, css class)
@@ -110,6 +111,17 @@ details.trend summary:hover .tname{color:var(--accent)}
 .chart polyline{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round}
 .chart .dot{fill:var(--accent);stroke:var(--surface);stroke-width:2}.chart .hit{fill:transparent}
 .chart .hit:hover+.dot{r:6}
+ul.findings{padding:0;margin:8px 0 0}
+.finding{list-style:none;margin:8px 0;padding:8px 12px;border:1px solid var(--grid);border-radius:8px}
+.finding[hidden]{display:none}
+.finding .why{color:var(--ink2);margin:2px 0}
+.finding pre{font:12px ui-monospace,Consolas,monospace;background:var(--hover);padding:4px 8px;border-radius:4px;margin:4px 0 6px;
+white-space:pre-wrap;word-break:break-word}
+.tag{display:inline-block;font-size:11px;font-weight:600;border-radius:4px;padding:0 6px;margin-right:6px;background:var(--serious);color:#fff}
+button.copy{font-size:12px;padding:2px 8px}
+details.rule summary{cursor:pointer}details.rule p{color:var(--ink2);margin:4px 0 6px;max-width:900px}
+#security details>summary{cursor:pointer;margin-top:12px}
+#security table td{vertical-align:top}#security table td:nth-child(2){white-space:nowrap}
 footer{color:var(--muted);font-size:12px;margin-top:8px}
 """
 
@@ -197,6 +209,21 @@ document.querySelectorAll('.depgraph').forEach(box => {
   };
   box.zoom(0);
 });
+// ----- security review: the findings of one rule, the lines to copy into reviewed.toml
+const rule = document.getElementById('srule');
+if (rule) rule.addEventListener('change', () =>
+  document.querySelectorAll('#security > ul.findings > .finding').forEach(li => li.hidden = !!rule.value && li.dataset.rule !== rule.value));
+document.querySelectorAll('button.copy').forEach(btn => btn.addEventListener('click', () => {
+  const text = btn.dataset.copy, label = btn.textContent;
+  const done = () => { btn.textContent = 'Copied: paste it into reviewed.toml, then say why in reason'; setTimeout(() => btn.textContent = label, 2500); };
+  const byHand = () => {  // file:// pages may not have the clipboard API
+    const area = document.createElement('textarea');
+    area.value = text; document.body.append(area); area.select();
+    try { document.execCommand('copy'); done(); } catch (e) { window.prompt('Copy these lines:', text); }
+    area.remove();
+  };
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, byHand); else byHand();
+}));
 const series = document.getElementById('series');  // the trend of one way of measuring at a time
 if (series) {
   const pick = () => document.querySelectorAll('.series').forEach(b => b.hidden = b.dataset.key !== series.value);
@@ -424,11 +451,12 @@ def _detail(name: str, entry: dict, state: dict, used_by: list[str], enterprise:
     return "".join(parts)
 
 
-def _table(state: dict, enterprise: dict) -> str:
+def _table(state: dict, enterprise: dict, reviewed: Optional[dict] = None) -> str:
     used_by = {name: sorted(n for n, e in state.items() if name in e.get('depends', [])) for name in state}
+    to_review = {name: sum(1 for f in e.get('security') or [] if f['id'] not in (reviewed or {})) for name, e in state.items()}
     columns = [("name", "Addon", ""), ("rank", "Status", ""), ("coverage", "Coverage", ""), ("tests", "Tests", ""),
                ("failed", "Failed", "num"), ("loc", "Lines of code", "num"), ("usedby", "Used by", "num"),
-               ("ent", "Enterprise", "num")]
+               ("ent", "Enterprise", "num"), ("security", "Security", "num")]
     head = "".join(f'<th data-key="{key}" class="{css}">{label}</th>' for key, label, css in columns)
     bodies = []
     for name, entry in sorted(state.items(), key=lambda item: (STATUS_RANK[report.status(item[1])], item[0])):
@@ -440,9 +468,10 @@ def _table(state: dict, enterprise: dict) -> str:
         bodies.append(
             f'<tbody class="addon" data-name="{E(name.lower())}" data-status="{state_name}" data-rank="{STATUS_RANK[state_name]}" '
             f'data-coverage="{coverage}" data-tests="{entry.get("tests") or 0}" data-failed="{failed}" data-loc="{entry.get("loc", 0)}" '
-            f'data-usedby="{len(used_by[name])}" data-ent="{len(ent)}"><tr><td class="name">{E(name)}</td><td>{_status_html(state_name)}</td>'
+            f'data-usedby="{len(used_by[name])}" data-ent="{len(ent)}" data-security="{to_review[name]}"><tr><td class="name">{E(name)}</td><td>{_status_html(state_name)}</td>'
             f'<td>{_coverage_html(entry)}</td><td>{_tests_html(entry)}</td><td class="num">{failed or ""}</td>'
-            f'<td class="num">{entry.get("loc", 0):,}</td><td class="num">{len(used_by[name]) or ""}</td><td class="num">{ent_cell}</td></tr>'
+            f'<td class="num">{entry.get("loc", 0):,}</td><td class="num">{len(used_by[name]) or ""}</td><td class="num">{ent_cell}</td>'
+            f'<td class="num" title="Security findings to review">{to_review[name] or ""}</td></tr>'
             f'<tr class="detail"><td colspan="{len(columns)}">{_detail(name, entry, state, used_by[name], ent)}</td></tr></tbody>')
     options = "".join(f'<option value="{name}">{label}</option>' for name, (label, _, _) in STATUS.items())
     options += '<option value="enterprise">Needs Odoo enterprise</option>'
@@ -451,6 +480,59 @@ def _table(state: dict, enterprise: dict) -> str:
             f'<select id="only" aria-label="Filter by status"><option value="">All statuses</option>{options}</select>'
             '<span class="meta" style="margin:0">Click a row for the details, a column title to sort.</span></div>'
             f'<table id="addons"><thead><tr>{head}</tr></thead>{"".join(bodies)}</table></section>')
+
+
+def _security(state: dict, reviewed: dict, before: Optional[set]) -> str:
+    """The security review: what each rule looks for (the docstring of its function), the findings to review (the
+    new ones first: not in the previous report), those reviewed with their reason, the stale lines of reviewed.toml."""
+    if not any('security' in e for e in state.values()):
+        return ""
+    findings = [f for e in state.values() for f in e.get('security') or []]
+    rank = {r.key: i for i, r in enumerate(security.RULES)}
+    titles = {r.key: r.title for r in security.RULES}
+    is_new = lambda f: before is not None and f['id'] not in before
+    place = lambda f: (rank.get(f['rule'], len(rank)), f['addon'], f['file'], f['line'])
+    to_review = sorted((f for f in findings if f['id'] not in reviewed), key=lambda f: (not is_new(f), *place(f)))
+    done = sorted((f for f in findings if f['id'] in reviewed), key=place)
+    stale = sorted(reviewed.keys() - {f['id'] for f in findings})
+    fresh = sum(1 for f in to_review if is_new(f))
+
+    def item(f: dict, reason: Optional[str] = None) -> str:
+        where = f" · {E(f['where'])}" if f.get('where') else ""
+        end = (f'<div class="why">Reviewed: {E(reason)}</div>' if reason is not None else
+               f'<button class="copy" data-copy="{E(security.review_entry(f))}">Copy for reviewed.toml</button>')
+        tag = '<span class="tag">new</span>' if reason is None and is_new(f) else ""
+        return (f'<li class="finding" data-rule="{E(f["rule"])}">{tag}'
+                f'<strong>{E(titles.get(f["rule"], f["rule"]))}</strong> · {E(f["addon"])} · <code>{E(f["file"])}:{f["line"]}</code>'
+                f'{where}<div class="why">{E(f["why"])}</div><pre>{E(f["code"])}</pre>{end}</li>')
+
+    rows = "".join(
+        f'<tr><td><details class="rule"><summary>{E(r.title)}</summary>'
+        + "".join(f"<p>{E(' '.join(p.split()))}</p>" for p in r.text.split("\n\n")) + '</details></td>'
+        f'<td>{E(r.kind)}</td><td class="num">{sum(1 for f in to_review if f["rule"] == r.key) or ""}</td>'
+        f'<td class="num">{sum(1 for f in done if f["rule"] == r.key) or ""}</td></tr>' for r in security.RULES)
+    options = "".join(f'<option value="{r.key}">{E(r.title)}</option>' for r in security.RULES
+                      if any(f['rule'] == r.key for f in to_review))
+    body = ('<p class="meta" style="margin:0 0 10px">Places of your code to look at, found by reading the files: not '
+            'proof of a flaw. Click a rule to see what it looks for and what it leaves out. When a finding is fine, copy '
+            'its lines into <code>reviewed.toml</code> (next to <code>config.toml</code>) and say why in '
+            '<code>reason</code>: it leaves this list and the chart.</p>'
+            '<table class="plain"><thead><tr><th>Rule</th><th>Kind</th><th class="num">To review</th>'
+            f'<th class="num">Reviewed</th></tr></thead><tbody>{rows}</tbody></table>')
+    if to_review:
+        body += (f'<div class="controls" style="margin-top:14px"><select id="srule" aria-label="Filter by rule">'
+                 f'<option value="">All rules</option>{options}</select></div>'
+                 f'<ul class="findings">{"".join(item(f) for f in to_review)}</ul>')
+    else:
+        body += '<p class="meta">Nothing to review.</p>'
+    if done:
+        body += (f'<details><summary>Reviewed ({len(done)})</summary><ul class="findings">'
+                 + "".join(item(f, reviewed[f['id']]) for f in done) + '</ul></details>')
+    if stale:
+        body += (f'<p class="meta">{len(stale)} line(s) of <code>reviewed.toml</code> match no finding anymore (the code '
+                 f'changed or was removed), they can go: {", ".join(f"<code>{E(i)}</code>" for i in stale)}</p>')
+    return (f'<section id="security"><h2>Security review ({len(to_review)} to review'
+            + (f', {fresh} new' if fresh else '') + f')</h2>{body}</section>')
 
 
 def _graph(graphs: dict) -> str:
@@ -487,12 +569,16 @@ def axis_number(value: float) -> str:
     return f"{value / 1000:,.4g}k" if abs(value) >= 10000 else f"{value:,.6g}"
 
 
-def zoomed_axis(values: list[float]) -> tuple[float, float, float]:
-    """(low, high, step) of an axis covering the values with round ticks, instead of starting at 0."""
+def zoomed_axis(values: list[float], whole: bool = False) -> tuple[float, float, float]:
+    """(low, high, step) of an axis covering the values with round ticks, instead of starting at 0. `whole`: counts,
+    whose ticks are whole numbers (no "0.5 findings" when they are all 0)."""
     low, high = min(values), max(values)
     span = (high - low) or max(abs(high) * 0.02, 1)  # a flat line: a narrow band around it
     magnitude = 10 ** math.floor(math.log10(span / 2))
-    step = next(m * magnitude for m in (1, 2, 2.5, 5, 10) if m * magnitude >= span / 2)
+    if whole:
+        magnitude = max(1, magnitude)
+    step = next(m * magnitude for m in (1, 2, 2.5, 5, 10)
+                if m * magnitude >= span / 2 and (not whole or float(m * magnitude).is_integer()))
     low, high = math.floor(low / step) * step, math.ceil(high / step) * step
     return low, (high if high > low else low + step), step
 
@@ -507,7 +593,7 @@ def line_chart(title: str, points: list[tuple], unit: str = "", y_max: Optional[
     width, height, left, right, top, bottom = 1200, 200, 48, 72, 26, 24
     values = [p[1] for p in points]
     if zoom:
-        low, high, step = zoomed_axis(values)
+        low, high, step = zoomed_axis(values, whole=not unit)  # no unit: a count
         ticks = [low + i * step for i in range(round((high - low) / step) + 1)]
     else:
         low, high = 0, y_max or max(1, *values)
@@ -545,6 +631,7 @@ TREND_CHARTS = (
     ('loc', "Lines of code", "", True),
     ('tests', "Tests", "", True),
     ('failed', "Failed tests", "", False),
+    ('security', "Security findings to review", "", True),
     ('not_installable', "Not installable addons", "", False),
     ('no_tests', "Addons without tests", "", False),
     ('addons', "Addons", "", True),
@@ -573,9 +660,10 @@ def event_positions(dates: list, events: list[dict]) -> list[tuple[float, str]]:
 
 
 def _trend_section(key: str, title: str, unit: str, is_open: bool, zoom: bool, runs: list[dict], events: list[dict],
-                   value_of, custom: bool = False) -> str:
+                   value_of, custom: bool = False, detail=None) -> str:
     """One chart in its foldable section, titled with its last value. The runs are in the order of their code_date.
-    custom: a measure of config.toml, said to come later when no run recorded it yet (other charts are left out)."""
+    custom: a chart said to come later when no run recorded it yet (a measure of config.toml, the security review;
+    the other charts are left out). detail: more about a run for the tooltip of its point."""
     points = [(r, value_of(r)) for r in runs if value_of(r) is not None]
     head = f'<details class="trend" data-chart="{key}"{" open" if is_open else ""}><summary><span class="tname">{E(title)}</span>'
     if not points:
@@ -587,7 +675,8 @@ def _trend_section(key: str, title: str, unit: str, is_open: bool, zoom: bool, r
         return head + f'<span class="tnote">one run so far ({E(label(points[0][0]))})</span></summary></details>'
     # the tooltip gives the Odoo version, and both dates for a run measured after its code was written (an old commit)
     tip = lambda r: label(r) + (f" · Odoo {r['odoo']}" if r.get('odoo') else "") + (
-        f" (measured {str(r['date'])[:10]})" if r.get('code_date') and str(r['code_date'])[:10] != str(r.get('date', ''))[:10] else "")
+        f" (measured {str(r['date'])[:10]})" if r.get('code_date') and str(r['code_date'])[:10] != str(r.get('date', ''))[:10] else "") + (
+        f" · {detail(r)}" if detail and detail(r) else "")
     dates = [code_date(r) for r, _ in points]
     chart = line_chart(title, [(label(r), v, tip(r)) for r, v in points], unit, 100 if unit == "%" else None, zoom,
                        event_positions(dates, events + version_changes([r for r, _ in points])) if all(dates) else [])
@@ -605,13 +694,28 @@ def version_changes(runs: list[dict]) -> list[dict]:
     return found
 
 
-def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict] = None) -> str:
+def open_findings(run: dict, reviewed: dict) -> Optional[int]:
+    """The security findings of a run not reviewed (with today's reviewed.toml), None when it has no review."""
+    found = run.get('security')
+    return None if found is None else sum(1 for ids in found.values() for i in ids if i not in reviewed)
+
+
+def _findings_detail(run: dict, reviewed: dict) -> str:
+    """The findings to review of a run, rule by rule (tooltip of a point of the security chart)."""
+    titles = {r.key: r.title for r in security.RULES}
+    counts = [(titles.get(key, key), sum(1 for i in ids if i not in reviewed)) for key, ids in (run.get('security') or {}).items()]
+    return ", ".join(f"{title}: {n}" for title, n in counts if n)
+
+
+def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict] = None,
+           reviewed: Optional[dict] = None) -> str:
     """One trend per method (whole, or one by one): runs measured differently do not compare. Every Odoo version on
     the same curve (a dashed line where it changes); when the runs span several versions, each one alone too, one
     choice away. `measures`: the labels of [[report.measures]]. `choice`: [report] trends (the charts shown: by default all, the
     measures last) and trends_open (unfolded at first: by default coverage and lines of code). The unfolded charts
-    come first in the order of trends_open, then the others in the order of trends."""
-    choice = choice or {}
+    come first in the order of trends_open, then the others in the order of trends. `reviewed`: the security findings
+    found fine (reviewed.toml): the security chart counts the others, in every run."""
+    choice, reviewed = choice or {}, reviewed or {}
     listed = choice.get('trends', [key for key, *_ in TREND_CHARTS] + list(measures))
     opened = [name for name in choice.get('trends_open', TRENDS_OPEN) if name in listed]
     unfolded = set(opened)
@@ -645,6 +749,11 @@ def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict]
     builtin = {key: (title, unit, zoom) for key, title, unit, zoom in TREND_CHARTS}
 
     def section(name: str, lines: list[dict]) -> str:
+        if name == 'security':
+            title, unit, zoom = builtin[name]
+            return _trend_section(name, title, unit, name in unfolded, zoom, lines, events,
+                                  lambda r: open_findings(r, reviewed), custom=True,
+                                  detail=lambda r: _findings_detail(r, reviewed))
         if name in builtin:
             title, unit, zoom = builtin[name]
             return _trend_section(name, title, unit, name in unfolded, zoom, lines, events, lambda r: r.get(name))
@@ -690,8 +799,9 @@ def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Option
         '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
         f'<title>Codebase report</title><style>{CSS}</style><style id="graph-css">{GRAPH_CSS}</style></head><body><main>',
         f'<h1>Codebase report</h1><p class="meta">Generated {E(when)} · {how}</p>',
-        _tiles(summary, old_summary, previous, series), _attention(state, meta.get('standard_tests')), _standard(meta.get('standard_tests')), _enterprise(enterprise), _changes(diff, old_date), _table(state, enterprise),
-        _graph(graphs), _trend(history, meta.get('measures') or [], meta.get('trends')),
+        _tiles(summary, old_summary, previous, series), _attention(state, meta.get('standard_tests')), _standard(meta.get('standard_tests')), _enterprise(enterprise), _changes(diff, old_date),
+        _security(state, meta.get('reviewed') or {}, meta.get('security_before')), _table(state, enterprise, meta.get('reviewed')),
+        _graph(graphs), _trend(history, meta.get('measures') or [], meta.get('trends'), meta.get('reviewed')),
         '<footer>Files next to this report: <code>state.json</code> (last results, reused for unchanged addons), '
         '<code>history.jsonl</code> (one line per measured run), <code>coverage_odoo.log</code> (full Odoo log of the last measure).</footer>',
         '</main><script type="application/json" id="data">', json.dumps(data).replace("</", "<\\/"), '</script>',

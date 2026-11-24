@@ -18,7 +18,7 @@ from typing import Optional
 
 import typer
 
-from . import report_html
+from . import report_html, security
 from .coverage import NOT_INSTALLABLE, Result
 
 REPORT_FILE = "report.html"
@@ -59,9 +59,19 @@ def status(entry: dict) -> str:
     return 'ok' if entry.get('tests') else 'no_tests'
 
 
+def security_ids(state: dict) -> Optional[set[str]]:
+    """The ids of the security findings of a state; None when it was made before jsa had the security review."""
+    if not any('security' in e for e in state.values()):
+        return None
+    return {f['id'] for e in state.values() for f in e.get('security') or []}
+
+
 def summarize(state: dict) -> dict:
-    """Totals of a state. The coverage is weighted by the size of the addons (covered / measured statements)."""
+    """Totals of a state. The coverage is weighted by the size of the addons (covered / measured statements).
+    'security': the ids of the findings of each rule (the chart counts those not reviewed: reviewing one lowers the
+    whole curve), None when the state has none."""
     statuses = [status(e) for e in state.values()]
+    scanned = [e for e in state.values() if 'security' in e]
     statements = sum(e.get('statements') or 0 for e in state.values())
     covered = sum(e.get('covered') or 0 for e in state.values())
     return {
@@ -76,6 +86,7 @@ def summarize(state: dict) -> dict:
         # addons depending directly on Odoo enterprise modules (None: not checked)
         'enterprise': (sum(1 for e in state.values() if e.get('enterprise'))
                        if any(e.get('enterprise') is not None for e in state.values()) else None),
+        'security': security.by_rule(f for e in scanned for f in e['security']) if scanned else None,
     }
 
 
@@ -280,11 +291,13 @@ def load_standard_tests(out_dir: Path) -> Optional[dict]:
 
 def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Result]], out_dir: Path,
                   extra: Optional[dict] = None, run: Optional[dict] = None, standard: Optional[dict] = None,
-                  measures: Optional[dict] = None, trends: Optional[dict] = None):
+                  measures: Optional[dict] = None, trends: Optional[dict] = None, reviewed: Optional[dict] = None):
     """`run` describes a coverage run ({'mode', 'profile'}) when addons were measured now: it is added to the history.
     `standard`: the results of the standard modules' tests run now; else those of the last time they were run.
     `measures`: the counts of [[report.measures]] of config.toml ({label: count}), recorded with the run.
-    `trends`: [report] trends / trends_open of config.toml, the charts shown and unfolded (none: the default)."""
+    `trends`: [report] trends / trends_open of config.toml, the charts shown and unfolded (none: the default).
+    `reviewed`: the security findings found fine ({id: reason}, reviewed.toml)."""
+    reviewed = reviewed or {}
     out_dir.mkdir(parents=True, exist_ok=True)
     old, old_date = load_state(out_dir)
     standard_tests = load_standard_tests(out_dir)
@@ -308,7 +321,8 @@ def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Res
     html = report_html.render(new, summary, summarize(old) if old else None, compute_diff(old, new) if old else None,
                               old_date, load_history(out_dir / HISTORY_FILE), graphs,
                               {'generated_at': now, **(run or {}), 'standard_tests': standard_tests,
-                               'measures': list(measures or {}), 'trends': trends or {}})
+                               'measures': list(measures or {}), 'trends': trends or {}, 'reviewed': reviewed,
+                               'security_before': security_ids(old)})
     (out_dir / REPORT_FILE).write_text(html, encoding='utf-8')
     (out_dir / STATE_FILE).write_text(json.dumps({'schema': SCHEMA, 'generated_at': now, 'addons': new,
                                                   'standard_tests': standard_tests}, indent=1), encoding='utf-8')
@@ -318,4 +332,10 @@ def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Res
     if measures:
         typer.echo("📏 " + ", ".join(f"{label}: {count:,}" for label, count in measures.items())
                    + ("" if run else " (the trends record them with the runs that measure the coverage, -c)"))
+    found = security_ids(new)
+    if found is not None:
+        to_review, before = found - reviewed.keys(), security_ids(old)
+        fresh = len(to_review - before) if before is not None else 0
+        typer.echo(f"🔒 Security review: {len(to_review) or 'nothing'} to review" + (f", {fresh} new" if fresh else "")
+                   + (f" ({len(found) - len(to_review)} reviewed)" if len(found) > len(to_review) else ""))
     typer.echo(f"✅ Report: {out_dir / REPORT_FILE}")

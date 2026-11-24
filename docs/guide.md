@@ -148,8 +148,9 @@ then the other applications and modules. Useful before moving a database to the 
   last run (its tooltip says which run: the measures compare with the last run measured the same way).
 - **Needs attention**, **changes since the previous run**, the **dependencies on Odoo enterprise** (direct, and through
   another custom addon).
+- **Security review**: the places of your code to look at, below.
 - **A table of the addons**, sortable and filterable; a click opens the failed tests, the lines not covered, the
-  dependencies and who uses the addon.
+  dependencies and who uses the addon. The last column counts its security findings to review.
 
 ![Table of the addons](images/report_table.png)
 
@@ -160,8 +161,8 @@ then the other applications and modules. Useful before moving a database to the 
 ![Dependency graph](images/report_graph.png)
 
 - **Trends**, run after run, one chart under the other: coverage and lines of code open, the others folded (tests,
-  failed tests, addons not installable, addons without tests, addons, enterprise dependencies, your own measures),
-  each titled with its last value. The lines of code have their own scale (a 2% growth would look flat on an axis
+  failed tests, security findings to review, addons not installable, addons without tests, addons, enterprise
+  dependencies, your own measures), each titled with its last value. The lines of code have their own scale (a 2% growth would look flat on an axis
   starting at 0). Each run is placed at the date of the code it measured: the last commit of your addons folders
   (or the date of the run when they had uncommitted changes). So you can fill the past: `jsa backfill` (below).
 
@@ -192,8 +193,8 @@ trends = ["coverage", "loc", "tests", "TODO comments"]  # the charts shown
 trends_open = ["TODO comments", "coverage"]             # unfolded at first
 ```
 The unfolded charts come first, in the order of `trends_open`, then the folded ones in the order of `trends`.
-The charts: `coverage`, `loc` (lines of code), `tests`, `failed`, `not_installable`, `no_tests`, `addons`,
-`enterprise`, and the labels of your measures. Either key can be left out (it keeps its default).
+The charts: `coverage`, `loc` (lines of code), `tests`, `failed`, `security`, `not_installable`, `no_tests`,
+`addons`, `enterprise`, and the labels of your measures. Either key can be left out (it keeps its default).
 
 ![Trends](images/report_trend.png)
 
@@ -207,6 +208,41 @@ files = ["*.py", "*.js", "*.xml"] # optional: only these files
 ```
 It is counted in the files of the lines of code (no tests, translations, migrations) and recorded by each run that
 measures the coverage (`-c`).
+
+**Security review.** Each `jsa structure` (with or without `-c`) reads the code of your addons (no tests,
+translations, migrations, upgrades) and lists the places to look at, in seconds, without Odoo. Eight rules, from the
+pitfalls of Odoo's security documentation:
+
+| Kind | Rule |
+|---|---|
+| Access control | `sudo()` in a public method of a model (anyone who can read its records can call it over RPC) |
+| | `sudo()` in a web route open to visitors who are not logged in (`auth='public'` or `'none'`) |
+| | a web route with `csrf=False` |
+| | an access right of `ir.model.access.csv` with no group that allows to write, create or delete |
+| | a model with a `company_id` and no record rule about the company |
+| Injection | a query given to `cr.execute()` built with values (an f-string, `%`, `+`, `.format()`) |
+| | HTML not escaped: `Markup()` around a built string, `t-raw`, an `Html` field with `sanitize=False` |
+| | `eval()` or `exec()` |
+
+In the page, a click on a rule shows what it looks for and what it leaves out (the same text as in the code:
+`jsa/structure/security.py`, one function per rule). The findings appeared since the previous report come first,
+marked "new".
+
+![Security review](images/report_security.png)
+
+A finding is a place to look at, not a proven flaw. When it is fine, "Copy for reviewed.toml" gives its lines: paste
+them into `reviewed.toml`, next to `config.toml` (yours: ignored by git), and say why in `reason`:
+```toml
+[[security]]
+id = "2703320406"  # sudo() in a method callable over RPC | my_addon/models/sale.py | Sale.action_confirm
+reason = "only managers reach it: the method checks the group"
+```
+It then leaves the list (it is shown folded under "Reviewed", with its reason) and the chart. Its id stays the same
+when lines move, and changes when its code changes (to look at again). The lines of `reviewed.toml` whose finding is
+gone are pointed out; a line without a reason stops the command. The chart "Security findings to review" counts, for
+each run, the findings not reviewed in today's `reviewed.toml`: reviewing one lowers the whole curve. Like your
+measures, it is recorded by the runs that measure the coverage (`-c`); `jsa backfill` adds it to the commits already
+measured, in seconds.
 
 **Events.** To see the trends before and after a release, someone joining the team, ..., add a line by hand to
 `codebase_analysis/history.jsonl`: `{"date": "2026-11-01", "event": "Release 2.0"}`. It is drawn as a dashed vertical
