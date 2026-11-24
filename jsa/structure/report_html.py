@@ -111,6 +111,8 @@ details.trend summary:hover .tname{color:var(--accent)}
 .chart polyline{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round}
 .chart .dot{fill:var(--accent);stroke:var(--surface);stroke-width:2}.chart .hit{fill:transparent}
 .chart .hit:hover+.dot{r:6}
+details.trend svg.full,details.trend.from0 svg.zoomed{display:none}details.trend.from0 svg.full{display:block}
+.axisbar{display:flex;justify-content:flex-end}button.axis{font-size:12px;padding:2px 8px}
 ul.findings{padding:0;margin:8px 0 0}
 .finding{list-style:none;margin:8px 0;padding:8px 12px;border:1px solid var(--grid);border-radius:8px}
 .finding[hidden]{display:none}
@@ -229,6 +231,14 @@ if (series) {
   const pick = () => document.querySelectorAll('.series').forEach(b => b.hidden = b.dataset.key !== series.value);
   series.addEventListener('change', pick); pick();
 }
+// a chart zoomed on its values (at first) or from 0: the same in the trends of the other ways of measuring
+document.querySelectorAll('details.trend button.axis').forEach(btn => btn.addEventListener('click', () => {
+  const section = btn.closest('details.trend'), from0 = !section.classList.contains('from0');
+  document.querySelectorAll(`details.trend[data-chart="${section.dataset.chart}"]`).forEach(d => {
+    d.classList.toggle('from0', from0);
+    d.querySelector('button.axis').textContent = from0 ? 'Zoom on the values' : 'Axis from 0';
+  });
+}));
 // a chart folded or unfolded: the same in the trends of the other ways of measuring
 document.querySelectorAll('details.trend').forEach(d => d.addEventListener('toggle', () =>
   document.querySelectorAll(`details.trend[data-chart="${d.dataset.chart}"]`).forEach(o => { if (o.open !== d.open) o.open = d.open; })));
@@ -584,12 +594,13 @@ def zoomed_axis(values: list[float], whole: bool = False) -> tuple[float, float,
 
 
 def line_chart(title: str, points: list[tuple], unit: str = "", y_max: Optional[float] = None,
-               zoom: bool = False, events: list[tuple[float, str]] = ()) -> str:
+               zoom: bool = False, events: list[tuple[float, str]] = (), css: str = "") -> str:
     """Line chart of one measure over the runs (the section around it names it). points: (label, value[, tooltip]).
     Each point has a tooltip (its label unless given), the first and last labels are on the x axis, the last
     value is labeled. zoom: the axis covers the values instead of starting at 0 (+2% on 80,000 lines of code would
     look flat). events: (position on the x axis, counted in runs; what happened), drawn as dashed vertical lines.
-    As wide as the page's sections (1200 = their width on a large screen: the text keeps its size there)."""
+    As wide as the page's sections (1200 = their width on a large screen: the text keeps its size there).
+    css: more classes of the <svg>."""
     width, height, left, right, top, bottom = 1200, 200, 48, 72, 26, 24
     values = [p[1] for p in points]
     if zoom:
@@ -600,7 +611,8 @@ def line_chart(title: str, points: list[tuple], unit: str = "", y_max: Optional[
         ticks = [0, high / 2, high] if unit or high % 2 == 0 else [0, high]  # no half tick for counts
     x = lambda i: left + i * (width - left - right) / max(len(points) - 1, 1)
     y = lambda v: top + (1 - (v - low) / (high - low)) * (height - top - bottom)
-    out = [f'<svg class="chart" viewBox="0 0 {width} {height}" width="{width}" role="img" aria-label="{E(title)}">']
+    out = [f'<svg class="chart{" " + css if css else ""}" viewBox="0 0 {width} {height}" width="{width}" role="img" '
+           f'aria-label="{E(title)}">']
     for tick in ticks:
         css = "axisline" if tick == ticks[0] else "gridline"
         out.append(f'<line class="{css}" x1="{left}" x2="{width - right}" y1="{y(tick):.1f}" y2="{y(tick):.1f}"/>'
@@ -625,17 +637,18 @@ def line_chart(title: str, points: list[tuple], unit: str = "", y_max: Optional[
     return "".join(out) + '</svg>'
 
 
-# the charts of the trend, in their default order: (key in the history = name in config.toml, title, unit, zoomed axis)
+# the charts of the trend, in their default order: (key in the history = name in config.toml, title, unit). Each one
+# is zoomed on its values at first (80% -> 82% must show), its axis from 0 one click away (the user, 2026-11-24)
 TREND_CHARTS = (
-    ('coverage', "Coverage", "%", False),
-    ('loc', "Lines of code", "", True),
-    ('tests', "Tests", "", True),
-    ('failed', "Failed tests", "", False),
-    ('security', "Security findings to review", "", True),
-    ('not_installable', "Not installable addons", "", False),
-    ('no_tests', "Addons without tests", "", False),
-    ('addons', "Addons", "", True),
-    ('enterprise', "Enterprise dependencies", "", False),
+    ('coverage', "Coverage", "%"),
+    ('loc', "Lines of code", ""),
+    ('tests', "Tests", ""),
+    ('failed', "Failed tests", ""),
+    ('security', "Security findings to review", ""),
+    ('not_installable', "Not installable addons", ""),
+    ('no_tests', "Addons without tests", ""),
+    ('addons', "Addons", ""),
+    ('enterprise', "Enterprise dependencies", ""),
 )
 TRENDS_OPEN = ('coverage', 'loc')  # unfolded at first, unless [report] trends_open of config.toml says otherwise
 
@@ -659,11 +672,12 @@ def event_positions(dates: list, events: list[dict]) -> list[tuple[float, str]]:
     return found
 
 
-def _trend_section(key: str, title: str, unit: str, is_open: bool, zoom: bool, runs: list[dict], events: list[dict],
+def _trend_section(key: str, title: str, unit: str, is_open: bool, runs: list[dict], events: list[dict],
                    value_of, custom: bool = False, detail=None) -> str:
     """One chart in its foldable section, titled with its last value. The runs are in the order of their code_date.
-    custom: a chart said to come later when no run recorded it yet (a measure of config.toml, the security review;
-    the other charts are left out). detail: more about a run for the tooltip of its point."""
+    Drawn twice: zoomed on its values (shown) and from 0 (class 'full'), a button swaps them (class 'from0' on the
+    section, see JS). custom: a chart said to come later when no run recorded it yet (a measure of config.toml, the
+    security review; the other charts are left out). detail: more about a run for the tooltip of its point."""
     points = [(r, value_of(r)) for r in runs if value_of(r) is not None]
     head = f'<details class="trend" data-chart="{key}"{" open" if is_open else ""}><summary><span class="tname">{E(title)}</span>'
     if not points:
@@ -678,9 +692,11 @@ def _trend_section(key: str, title: str, unit: str, is_open: bool, zoom: bool, r
         f" (measured {str(r['date'])[:10]})" if r.get('code_date') and str(r['code_date'])[:10] != str(r.get('date', ''))[:10] else "") + (
         f" · {detail(r)}" if detail and detail(r) else "")
     dates = [code_date(r) for r, _ in points]
-    chart = line_chart(title, [(label(r), v, tip(r)) for r, v in points], unit, 100 if unit == "%" else None, zoom,
-                       event_positions(dates, events + version_changes([r for r, _ in points])) if all(dates) else [])
-    return head + '</summary>' + chart + '</details>'
+    marks = event_positions(dates, events + version_changes([r for r, _ in points])) if all(dates) else []
+    chart = lambda zoom: line_chart(title, [(label(r), v, tip(r)) for r, v in points], unit, 100 if unit == "%" else None,
+                                    zoom, marks, "zoomed" if zoom else "full")
+    return (head + '</summary><div class="axisbar"><button type="button" class="axis" title="The axis of this chart starts '
+            'at 0, or covers only its values">Axis from 0</button></div>' + chart(True) + chart(False) + '</details>')
 
 
 def version_changes(runs: list[dict]) -> list[dict]:
@@ -746,19 +762,18 @@ def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict]
     select = ('<div class="controls"><select id="series" aria-label="Which runs">' + "".join(
         f'<option value="{i}">{E(label(key))} ({len(series[key])} runs)</option>' for i, key in enumerate(keys))
         + '</select></div>') if len(keys) > 1 else f'<p class="meta">{E(label(shown))}</p>'
-    builtin = {key: (title, unit, zoom) for key, title, unit, zoom in TREND_CHARTS}
+    builtin = {key: (title, unit) for key, title, unit in TREND_CHARTS}
 
     def section(name: str, lines: list[dict]) -> str:
         if name == 'security':
-            title, unit, zoom = builtin[name]
-            return _trend_section(name, title, unit, name in unfolded, zoom, lines, events,
-                                  lambda r: open_findings(r, reviewed), custom=True,
-                                  detail=lambda r: _findings_detail(r, reviewed))
+            title, unit = builtin[name]
+            return _trend_section(name, title, unit, name in unfolded, lines, events, lambda r: open_findings(r, reviewed),
+                                  custom=True, detail=lambda r: _findings_detail(r, reviewed))
         if name in builtin:
-            title, unit, zoom = builtin[name]
-            return _trend_section(name, title, unit, name in unfolded, zoom, lines, events, lambda r: r.get(name))
+            title, unit = builtin[name]
+            return _trend_section(name, title, unit, name in unfolded, lines, events, lambda r: r.get(name))
         if name in measures:  # data-chart: an id, the label may hold any character
-            return _trend_section(f"m{list(measures).index(name)}", name, "", name in unfolded, True, lines, events,
+            return _trend_section(f"m{list(measures).index(name)}", name, "", name in unfolded, lines, events,
                                   lambda r: (r.get('measures') or {}).get(name), custom=True)
         return ""  # a measure removed from config.toml
 
@@ -770,7 +785,8 @@ def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict]
             'same way only (whole, or one by one), every Odoo version together (a dashed line where it changes), at the date '
             'of the code measured: its last commit '
             '(the date of the run when it had uncommitted changes), so measuring old commits fills the past. '
-            'Click a title to fold or unfold its chart. To forget a '
+            'Click a title to fold or unfold its chart. Each chart is zoomed on its values: "Axis from 0" draws it from '
+            '0. To forget a '
             'run, delete its line in <code>history.jsonl</code>; to mark an event (a release, someone joining the team), add '
             'a line there: <code>{"date": "2026-11-01", "event": "Release 2.0"}</code>.</p></section>')
 

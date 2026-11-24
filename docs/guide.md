@@ -163,8 +163,9 @@ then the other applications and modules. Useful before moving a database to the 
 
 - **Trends**, run after run, one chart under the other: coverage and lines of code open, the others folded (tests,
   failed tests, security findings to review, addons not installable, addons without tests, addons, enterprise
-  dependencies, your own measures), each titled with its last value. The lines of code have their own scale (a 2% growth would look flat on an axis
-  starting at 0). Each run is placed at the date of the code it measured: the last commit of your addons folders
+  dependencies, your own measures), each titled with its last value. Each chart is zoomed on its values (coverage
+  going from 80% to 82% shows); its button "Axis from 0" draws it from 0 instead (in the trends of the other way of
+  measuring too). Each run is placed at the date of the code it measured: the last commit of your addons folders
   (or the date of the run when they had uncommitted changes). So you can fill the past: `jsa backfill` (below).
 
 **Filling the past.** List old commits of your addons in `plugins/backfill/backfill.toml` (copy

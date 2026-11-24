@@ -193,7 +193,8 @@ def test_one_trend_per_way_of_measuring_every_odoo_version_together(tmp_path):
     assert "41%" in shown and "72%" not in shown and "hidden" not in shown[:20]
     whole = page[page.index('data-key="1"'):page.index('data-key="2"')]
     coverage = whole[:whole.index('data-chart="failed"')]
-    assert coverage.count('class="dot"') == 4  # Odoo 17 and 19 on the same curve
+    zoomed = coverage[:coverage.index('class="chart full"')]  # each chart drawn twice: zoomed (shown) and from 0
+    assert zoomed.count('class="dot"') == 4  # Odoo 17 and 19 on the same curve
     assert "<title>Odoo 17 → 19</title>" in coverage and "· Odoo 17: 50%" in coverage  # where the version changes
     assert page.count(" hidden>") == 3
     assert ".series[hidden]{display:none}" in report_html.CSS  # the charts are display:flex, which beats "hidden"
@@ -256,7 +257,8 @@ def test_trend_charts_one_under_the_other_coverage_and_lines_of_code_open():
     assert "since" not in page
     assert "recorded from the next run measuring the coverage (-c)" in page[page.index('data-chart="m1"'):]
     # the event between the two runs is drawn on every chart, the one before the first run is not
-    assert page.count("<title>Release 2.0</title>") == 8 and "Before the first run" not in page and "Broken" not in page
+    # (each chart is drawn twice: zoomed on its values, and from 0)
+    assert page.count("<title>Release 2.0</title>") == 16 and "Before the first run" not in page and "Broken" not in page
     runs, events = report.runs_and_events(history)
     assert len(runs) == 2 and [e["event"] for e in events] == ["Release 2.0", "Before the first run"]
     assert report_html.event_positions([report.parse_date("2026-10-01"), report.parse_date("2026-10-03")],
@@ -331,6 +333,19 @@ def test_zoomed_axis_for_lines_of_code():
     chart = report_html.line_chart("Lines of code", [("a", 12000), ("b", 12480)], zoom=True)
     assert ">12k<" in chart and ">12.5k<" in chart and ">0<" not in chart and ">12,480<" in chart
     assert ">0<" in report_html.line_chart("Failed tests", [("a", 3), ("b", 1)])  # counts start at 0
+
+
+def test_every_chart_zoomed_at_first_its_axis_from_0_one_click_away():
+    page = report_html._trend([_run(1, 80.0, 12000), _run(3, 82.0, 12480)])
+    coverage = page[page.index('data-chart="coverage"'):page.index('data-chart="loc"')]
+    zoomed = coverage[coverage.index('class="chart zoomed"'):coverage.index('class="chart full"')]
+    full = coverage[coverage.index('class="chart full"'):]
+    assert ">80%<" in zoomed and ">82%<" in zoomed and ">0%<" not in zoomed  # 80% -> 82% shows
+    assert ">0%<" in full and ">100%<" in full
+    assert '<button type="button" class="axis"' in coverage and ">Axis from 0</button>" in coverage
+    assert "details.trend svg.full,details.trend.from0 svg.zoomed{display:none}" in report_html.CSS
+    low, high, _ = report_html.zoomed_axis([99.2, 99.9])
+    assert 99 <= low and high <= 100  # a coverage near 100% never gets an axis above 100%
 
 
 def test_the_time_a_test_may_take(capsys):
