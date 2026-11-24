@@ -117,6 +117,19 @@ class LogInfo:
                      [f"{name}.{step[0]}"] + [f"{name}.{test}" for test in self.class_tests.get((module, name), [])])
 
 
+def failure_words(info: LogInfo) -> tuple[str, str]:
+    """(the note of the module that failed, what it did), e.g. ("install failed", "failed to install"). Killed while
+    installing is not "during its tests" (the user found the note wrong, 2026-11-24)."""
+    if not info.timed_out:
+        return "install failed", "failed to install"
+    when = "during its tests" if info.in_tests else "while installing it"
+    return f"Odoo stopped answering {when}", f"made Odoo stop answering {when}"
+
+
+def why_it_failed(info: LogInfo) -> str:
+    return failure_words(info)[0]
+
+
 def record_skipped(info: LogInfo, skipped: list[Stuck]):
     """The tests left out of the last try because Odoo stopped answering with them: failed, and counted."""
     for stuck in skipped:
@@ -300,8 +313,7 @@ def install_leaving_out(modules, graph, attempt: Callable[[list[str], list[Stuck
         if culprit not in remaining:  # installed, or failed for a reason that is none of them
             record_skipped(info, skipped)
             return info, left_out
-        why = "Odoo stopped answering during its tests" if info.timed_out else "install failed"
-        what = "made Odoo stop answering during its tests" if info.timed_out else "failed to install"
+        why, what = failure_words(info)
         if all_or_nothing:  # like production: one addon that does not install stops them all
             typer.echo(f"⚠️ {culprit} {what}: the {len(remaining)} addons count as not installable (all or nothing)")
             left_out.update({m: why if m == culprit else f"not tested: {culprit} {what} (all or nothing)"

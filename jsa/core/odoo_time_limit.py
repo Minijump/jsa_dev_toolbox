@@ -8,6 +8,10 @@ class: Odoo's test runner then runs none of its tests, each one is logged as fai
 The error is not an Exception: a test catching every Exception (a retry loop) cannot swallow it. Uses SIGALRM: it
 stops Python code (a loop, a wait on the network), not a call blocked inside C (e.g. a database query waiting for a
 lock): jsa stops Odoo itself when no test starts for too long (odoo.install).
+
+Under coverage (jsa structure -c), it also tells coverage when the tests run: from the setUpClass of a test class to
+its tearDownClass, what runs is recorded in the context "test"; installing the modules (their demo data runs computes
+and create overrides) is not, so the coverage counts only what the tests run.
 """
 import importlib.abc
 import logging
@@ -112,6 +116,7 @@ def main():
             if getattr(result, '_previousTestClass', None) is not test_class:  # else Odoo does nothing
                 tests = [getattr(t, '_testMethodName', '?') for t in self if type(t) is test_class]
                 announce(test_class, f"setUpClass {test_class.__name__}: {' '.join(tests)}")
+                measured_as("test")
             set_up(self, test, result)
             mark_not_run(self, test_class)
 
@@ -120,9 +125,23 @@ def main():
             if previous is not None and previous is not type(test) and not getattr(previous, '_classSetupFailed', False):
                 announce(previous, f"tearDownClass {previous.__name__}")
             tear_down(self, test, result)
+            if previous is not None and previous is not type(test):
+                measured_as("")  # between two classes, and after the last one: not a test
 
         suite.TestSuite._handleClassSetUp = handle_class_setup
         suite.TestSuite._tearDownPreviousClass = tear_down_previous_class
+
+    def measured_as(context: str):
+        """Under coverage (jsa structure -c): what runs from a setUpClass to its tearDownClass is recorded as run by
+        the tests ("test"), the rest (installing the modules, their demo data) as "" (coverage.TESTS_CONTEXT)."""
+        if covering is not None:
+            covering.switch_context(context)
+
+    try:
+        import coverage
+        covering = coverage.Coverage.current()  # None when not run under coverage
+    except ImportError:
+        covering = None
 
     def announce(test_class, what: str):
         """What runs between two tests, for jsa (odoo.CLASS_STEP_RE): if Odoo stops answering there, jsa skips it."""

@@ -10,6 +10,7 @@ from . import self_update
 from .core import config, pg, plugins
 from .core.addons import find_addons
 from .db import restore, restore_sql
+from .structure import coverage
 from .uitests import commands as uitests
 
 OK, WARN, FAIL = "✅", "⚠️", "❌"
@@ -116,7 +117,10 @@ def check_config() -> Iterator[Check]:
             continue
         yield OK, "🦉", f"Profile '{name}': {out.splitlines()[-1]}"
         ok, out = _run(profile['python'], "-c", "import coverage; print(coverage.__version__)")
-        if ok:
+        if ok and coverage.too_old(out):
+            yield WARN, "🎯", (f"Profile '{name}': coverage {out} is too old for 'jsa structure -c' (needs "
+                               f"{'.'.join(map(str, coverage.MIN_COVERAGE))}+): {profile['python']} -m pip install -U coverage")
+        elif ok:
             yield OK, "🎯", f"Profile '{name}': coverage {out} installed"
         else:
             yield WARN, "🎯", f"Profile '{name}': 'coverage' is not installed in its python: needed by 'jsa structure -c'"

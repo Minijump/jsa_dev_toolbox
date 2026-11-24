@@ -170,7 +170,11 @@ def test_a_stuck_setup_class_skips_its_class_and_an_install_that_hangs_leaves_th
 
     last, left_out = odoo.install_leaving_out(["c_mail", "c_sale", "c_sale_child"], GRAPH_SALE, attempt)
     assert tries == [["c_mail", "c_sale", "c_sale_child"], ["c_mail"]] and not last.failed
-    assert left_out == {"c_sale": "Odoo stopped answering during its tests", "c_sale_child": "depends on c_sale"}
+    # killed while installing: not "during its tests" (the wording the user found wrong, 2026-11-24)
+    assert left_out == {"c_sale": "Odoo stopped answering while installing it", "c_sale_child": "depends on c_sale"}
+    assert odoo.failure_words(stuck_info := killed("INFO db odoo.addons.c_sale.tests.test_y: Starting TestY.test_a ...")) \
+        == ("Odoo stopped answering during its tests", "made Odoo stop answering during its tests") and stuck_info.in_tests
+    assert odoo.failure_words(LogInfo()) == ("install failed", "failed to install")
 
 
 def test_isolated_skips_a_stuck_test_of_an_addon():
@@ -189,17 +193,40 @@ def test_isolated_skips_a_stuck_test_of_an_addon():
     assert runner.dbs == {}  # the database of the stopped try is dropped too
 
 
-def test_module_coverage(tmp_path):
+def test_module_coverage_counts_the_code_inside_functions_only(tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"
-    summary = lambda lines, stmts, br, nbr: {"summary": {"covered_lines": lines, "num_statements": stmts,
-                                                         "covered_branches": br, "num_branches": nbr}}
-    data = {"files": {str(a / "models" / "x.py"): {**summary(8, 10, 1, 4), "missing_lines": [3, 4, 9]},
-                      str(a / "models" / "y.py"): summary(10, 10, 0, 0),
-                      str(tmp_path / "c" / "z.py"): summary(0, 5, 0, 0)}}
+    region = lambda lines, stmts, br, nbr, missing=(): {
+        "summary": {"covered_lines": lines, "num_statements": stmts, "covered_branches": br, "num_branches": nbr},
+        "missing_lines": list(missing)}
+    # coverage.py 7.6+: one region per function, "" for the rest (imports, field definitions, def lines: run when
+    # Odoo imports the module, tested or not): left out
+    data = {"files": {str(a / "models" / "x.py"): {"functions": {"": region(12, 12, 0, 0),
+                                                                 "Sale.action": region(5, 6, 1, 4, [9]),
+                                                                 "Sale.action.inner": region(3, 4, 0, 0, [3, 4][:1])}},
+                      str(a / "models" / "y.py"): {"functions": {"": region(10, 10, 0, 0)}},  # nothing but definitions
+                      str(tmp_path / "c" / "z.py"): {"functions": {"f": region(0, 5, 0, 0)}}}}
     result = coverage.module_coverage(data, {"a": a, "b": b})
-    assert result["a"] == {"coverage": 79, "statements": 24, "covered": 19, "files": {"models/x.py": "3-4, 9"}}
+    assert result["a"] == {"coverage": 64, "statements": 14, "covered": 9, "files": {"models/x.py": "3, 9"}}
     assert result["b"]["coverage"] == NO_REPORT
     assert coverage.display_percent(999, 1000) == 99 and coverage.display_percent(1, 1000) == 1
+
+
+def test_coverage_versions_too_old_to_count_the_functions():
+    assert coverage.too_old("7.5.4") and coverage.too_old("6.5") and not coverage.too_old("7.6.0")
+    assert not coverage.too_old("7.16.2") and not coverage.too_old("8.0") and not coverage.too_old("weird")
+
+
+def test_only_what_ran_during_the_tests_is_read(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(coverage.odoo, "demo_arguments", lambda profile, demo: [])
+    monkeypatch.setattr(coverage.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    runner = coverage.OdooRunner({"python": "py", "odoo_root": "o", "enterprise": None, "db_prefix": "cov"}, tmp_path,
+                                 tmp_path / "log", time_limit=10)
+    runner.coverage_json()
+    assert calls[-1][-2:] == ["--contexts", "^test$"]  # the context the launcher switches to during the tests
+    runner.time_limit = None  # no launcher, no context: everything counts
+    runner.coverage_json()
+    assert "--contexts" not in calls[-1]
 
 
 class FakeRunner:

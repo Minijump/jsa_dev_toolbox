@@ -33,9 +33,20 @@ NO_REPORT = -2
 # by its tests, so it would only lower the coverage. Tests themselves and manifests neither.
 OMITTED = ("*/__manifest__.py", "*/__init__.py", "*/tests/*", "*/hooks.py", "*/hook.py", "*/hooks/*",
            "*/migrations/*", "*/upgrades/*")
-RULES = 4  # version of what is measured: the measures of another version are not reused (3: demo data on Odoo 19+;
-# 4: an addon that does not install counts as 0% covered, see never_run)
+RULES = 5  # version of what is measured: the measures of another version are not reused (3: demo data on Odoo 19+;
+# 4: an addon that does not install counts as 0% covered, see never_run; 5: only the code inside functions, run by the
+# tests, see module_coverage). Measures of another version are not compared either (report.measured_the_same_way).
+MIN_COVERAGE = (7, 6)  # coverage.py reports each function apart since 7.6 (July 2024)
+TESTS_CONTEXT = "test"  # what coverage records while a test class runs (odoo_time_limit.py switches to it)
 TOGETHER = " (with all the addons)"  # mode 'both': a test that fails only when all the addons are installed
+
+
+def too_old(version: str) -> bool:
+    """Whether a version of coverage.py ("7.5.4") does not report each function apart (MIN_COVERAGE)."""
+    try:
+        return tuple(int(part) for part in version.split(".")[:2]) < MIN_COVERAGE
+    except ValueError:
+        return False  # a version not understood: let the run say
 
 
 @dataclass
@@ -84,18 +95,24 @@ def line_ranges(lines: list[int]) -> str:
 
 def module_coverage(coverage_json: dict, addons: dict[str, Path]) -> dict[str, dict]:
     """Per addon, from 'coverage json' output: coverage (lines + branches, like 'coverage report --branch'),
-    statements, covered, and the uncovered lines of each file."""
+    statements, covered, and the uncovered lines of each file. Only the code inside functions counts (the user,
+    2026-11-24): imports, class bodies (field definitions), def lines and decorators run when Odoo imports the
+    module, tested or not; coverage.py reports them as the function "" (7.6+)."""
     out = {name: {'coverage': NO_REPORT, 'statements': 0, 'covered': 0, 'files': {}} for name in addons}
     roots = {name: addon.resolve() for name, addon in addons.items()}
     for path, data in coverage_json.get("files", {}).items():
         path = Path(path).resolve()
         for name, root in roots.items():
             if path.is_relative_to(root):
-                s, module = data["summary"], out[name]
-                module['covered'] += s["covered_lines"] + s.get("covered_branches", 0)
-                module['statements'] += s["num_statements"] + s.get("num_branches", 0)
-                if data.get("missing_lines"):
-                    module['files'][path.relative_to(root).as_posix()] = line_ranges(data["missing_lines"])
+                module = out[name]
+                inside = [region for function, region in data.get("functions", {}).items() if function]
+                for region in inside:
+                    s = region["summary"]
+                    module['covered'] += s["covered_lines"] + s.get("covered_branches", 0)
+                    module['statements'] += s["num_statements"] + s.get("num_branches", 0)
+                missing = sorted(line for region in inside for line in region.get("missing_lines", []))
+                if missing:
+                    module['files'][path.relative_to(root).as_posix()] = line_ranges(missing)
                 break
     for module in out.values():
         if module['statements']:
@@ -170,8 +187,12 @@ class OdooRunner:
                             python_args=python_args, odoo_args=self.demo_args + odoo_args, time_limit=self.time_limit)
 
     def coverage_json(self) -> dict:
+        """What the tests ran: the lines run while a test class ran (from its setUpClass to its tearDownClass), not
+        those run to install the modules (their demo data runs computes and create overrides, tested or not). The
+        launcher of the time limit marks the tests: without it (no time limit), everything counts."""
         out = self.work_dir / "coverage.json"
-        subprocess.run([self.profile['python'], "-m", "coverage", "json", "-q", "-o", str(out)],
+        tests_only = ["--contexts", f"^{TESTS_CONTEXT}$"] if self.time_limit else []
+        subprocess.run([self.profile['python'], "-m", "coverage", "json", "-q", "-o", str(out), *tests_only],
                        cwd=self.work_dir, env=config.odoo_env(self.profile), capture_output=True)
         return json.loads(out.read_text(encoding="utf-8")) if out.exists() else {}
 
@@ -272,8 +293,7 @@ def run_isolated(addons: dict[str, Path], graph: DependencyGraph, runner: OdooRu
                 runner.drop(db)
             if not info.failed:
                 odoo.record_skipped(info, skipped)
-            results[module] = (Result(NOT_INSTALLABLE, note="Odoo stopped answering during its tests" if info.timed_out
-                                      else "install failed") if info.failed
+            results[module] = (Result(NOT_INSTALLABLE, note=odoo.why_it_failed(info)) if info.failed
                                else _results(runner, db, info, {module: addons[module]})[module])
             runner.drop(db)
         typer.echo(f"   {label}: {describe(results[module])}")

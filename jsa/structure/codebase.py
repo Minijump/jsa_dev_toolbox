@@ -249,12 +249,19 @@ def _tables_with(table: dict, key: str, path: str = "") -> list[str]:
 
 
 def coverage_profile_of(name: str, conf: dict) -> dict:
-    """The profile that runs the tests under coverage. Stops when 'coverage' is not installed in its python."""
+    """The profile that runs the tests under coverage. Stops when 'coverage' is not installed in its python, or too
+    old to report each function apart (coverage.MIN_COVERAGE)."""
     profile = config.load_profile(name, conf)
-    found = subprocess.run([profile['python'], "-c", "import coverage"], capture_output=True)
+    found = subprocess.run([profile['python'], "-c", "import coverage; print(coverage.__version__)"],
+                           capture_output=True, text=True)
     if found.returncode != 0:
         typer.echo(f"❌ 'coverage' is not installed in the python of profile '{name}' ({profile['python']}): "
                    f"install it there with: {profile['python']} -m pip install coverage")
+        raise typer.Exit(code=1)
+    if coverage.too_old(found.stdout.strip()):
+        typer.echo(f"❌ coverage {found.stdout.strip()} in the python of profile '{name}' is too old (jsa counts the code "
+                   f"inside functions: {'.'.join(map(str, coverage.MIN_COVERAGE))} or later): "
+                   f"{profile['python']} -m pip install -U coverage")
         raise typer.Exit(code=1)
     return profile
 

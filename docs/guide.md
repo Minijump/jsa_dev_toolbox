@@ -62,7 +62,7 @@ git: `config.toml`, `dumps/`, `plugins/` (your commands), `uitests/` (your ui te
 
 | Key | |
 |---|---|
-| `python` | the Python that runs this Odoo (it needs `coverage` installed for `structure -c`) |
+| `python` | the Python that runs this Odoo (it needs `coverage` 7.6 or later installed for `structure -c`) |
 | `odoo_root`, `odoo_bin` | the Odoo sources and their `odoo-bin` |
 | `addons_paths` | as in Odoo's own configuration: your addons, then Odoo's (and enterprise's) |
 | `enterprise` | optional: the enterprise folder. Its modules are the "enterprise modules" flagged by the report |
@@ -143,7 +143,8 @@ then the other applications and modules. Useful before moving a database to the 
 ![Overview of the report](images/report_overview.png)
 
 - **Tiles**: addons, lines of code (without tests, translations and migrations), coverage (branch coverage: each
-  line, and each direction of each `if`), tests, addons that cannot be installed, dependencies on Odoo enterprise;
+  line, and each direction of each `if`, of the code inside functions run by the tests: see below), tests, addons
+  that cannot be installed, dependencies on Odoo enterprise;
   with their change since the
   last run (its tooltip says which run: the measures compare with the last run measured the same way).
 - **Needs attention**, **changes since the previous run**, the **dependencies on Odoo enterprise** (direct, and through
@@ -266,8 +267,8 @@ afterwards), runs their tests under `coverage`, and puts the results in the repo
   than the limit: the test fails with that error. When no test starts for 1 minute more, the queries still running
   are cancelled: the test fails, the run goes on. Only what neither stops (stuck elsewhere): Odoo is stopped and the
   tests run again without that test (or that class), counted as failed; the rest of the addon is measured. Stopped
-  while installing (no test running, 5 minutes more), the addon is left out (it counts as 0%) and the others are
-  tested again. `test_timeout` can be below a minute (`0.5`), but a slow test or setUpClass would then fail too. The run says the limit it uses ("each test and setUpClass 10 min at most");
+  while installing (no test running, 5 minutes more), the addon is left out (it counts as 0%, its note says "Odoo
+  stopped answering while installing it") and the others are tested again. `test_timeout` can be below a minute (`0.5`), but a slow test or setUpClass would then fail too. The run says the limit it uses ("each test and setUpClass 10 min at most");
   `test_timeout` written in another table of `config.toml` is reported, as it is not read there.
 - An addon that does not install (or is marked not installable) counts as 0% covered in the total: its tests never
   ran. Its lines and branches are counted as coverage would have measured them, so the coverage goes up when it
@@ -275,6 +276,12 @@ afterwards), runs their tests under `coverage`, and puts the results in the repo
 - `--standard-tests` (whole, both): also runs the tests of the standard modules your addons need, with your addons
   installed, like odoo.sh does. Long (`base` alone has about 1000 tests).
 - Demo data is always installed: tests written for a database with demo data keep passing on Odoo 19.
+- What counts: **the code inside functions, run by the tests**. Imports, field definitions, class and `def` lines,
+  decorators run when Odoo imports the module, tested or not: they are left out (they made an addon without tests
+  show 40% and more). Code run while installing (demo data running computes and `create` overrides) does not count
+  either: only what runs from the `setUpClass` of a test class to its `tearDownClass`. So an addon without tests is
+  at 0%. Tests that run code without checking it still count it: that is the limit of any coverage. Needs coverage.py
+  7.6 or later in the Python of the profile (`jsa doctor` says it; `<python> -m pip install -U coverage`).
 - Not measured: tests, manifests, `__init__.py`, hooks and migration scripts, which only run when a module is
   installed, upgraded or uninstalled.
 - Only what changed is measured again: in `isolated` and `both`, an addon keeps its last result while its code, its
@@ -287,7 +294,9 @@ run, for the trends: delete a line to forget a run; your events), `coverage_odoo
 measure).
 Runs are only compared with runs measured the same way: whole, or one by one (isolated and both), picked above the
 charts. Every Odoo version is on the same curve, so the coverage on Odoo 17 and on 19 compare; a dashed line marks
-where the version changes, and when there are several, each version alone is one choice away.
+where the version changes, and when there are several, each version alone is one choice away. The runs made before
+jsa 0.31 counted the coverage another way (every line of the files, installing included, so higher): to keep the
+trend comparable, delete `codebase_analysis/history.jsonl` (and run `jsa backfill` again if you use it).
 
 ## Finding the commit that broke a test
 
