@@ -500,9 +500,9 @@ def eval_exec(code: Code):
 REVIEW_KEYS = ('id', 'reason')
 
 
-def load_reviewed(path: Path) -> dict[str, str]:
-    """{finding id: why it is fine}: the [[security]] tables of reviewed.toml. A mistake stops the command (before
-    anything is measured)."""
+def load_reviewed(path: Path, section: str = 'security') -> dict[str, str]:
+    """{id: why it is fine}: the [[security]] tables of reviewed.toml (or those of another section: [[mutation]], the
+    changes no test notices that cannot matter). A mistake stops the command (before anything is measured)."""
     def refuse(why: str):
         typer.echo(f"❌ {path.name}: {why}")
         raise typer.Exit(code=1)
@@ -513,21 +513,21 @@ def load_reviewed(path: Path) -> dict[str, str]:
         return {}
     except tomllib.TOMLDecodeError as e:
         refuse(f"not valid TOML: {e}")
-    items = data.get('security', [])
+    items = data.get(section, [])
     if not isinstance(items, list):
-        refuse("write each finding as a [[security]] table: id = \"...\", reason = \"...\"")
+        refuse(f"write each one as a [[{section}]] table: id = \"...\", reason = \"...\"")
     reviewed = {}
     for number, item in enumerate(items, 1):
         if not isinstance(item, dict):
-            refuse(f"[[security]] #{number} must be a table: id = \"...\", reason = \"...\"")
+            refuse(f"[[{section}]] #{number} must be a table: id = \"...\", reason = \"...\"")
         unknown = sorted(set(item) - set(REVIEW_KEYS))
         if unknown:
-            refuse(f"[[security]] #{number} has the key(s) {', '.join(unknown)}, which do not exist: use id and reason")
+            refuse(f"[[{section}]] #{number} has the key(s) {', '.join(unknown)}, which do not exist: use id and reason")
         found_id, reason = item.get('id'), item.get('reason')
         if not isinstance(found_id, str) or not found_id.strip():
-            refuse(f"[[security]] #{number} needs the id of the finding (the report gives the line to copy)")
+            refuse(f"[[{section}]] #{number} needs the id (the report gives the lines to copy)")
         if not isinstance(reason, str) or not reason.strip():
-            refuse(f"[[security]] #{number} ({found_id}): say in reason why it is fine")
+            refuse(f"[[{section}]] #{number} ({found_id}): say in reason why it is fine")
         reviewed[found_id.strip()] = reason.strip()
     return reviewed
 

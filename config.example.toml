@@ -29,6 +29,12 @@ addons_roots = [
 #   pattern = '\bTODO\b'              # single quotes: a backslash stays a backslash
 #   files = ["*.py", "*.js", "*.xml"]
 
+# Mutation testing of your critical addons ('jsa mutation -p <profile>'): the addons measured when none is given, and
+# the methods left out (name globs, "Class.method" or "method").
+#   [mutation]
+#   addons = ["my_critical_addon"]
+#   skip = ["action_view_*", "SaleOrder._compute_display_name"]
+
 # What 'jsa restore' does to the restored database, in this order and in one transaction.
 # - requires: the step is skipped when this table ("table" or "table.column") does not exist (module not installed)
 # - odoo_versions = [19]: the step is skipped on the databases of the other versions of Odoo

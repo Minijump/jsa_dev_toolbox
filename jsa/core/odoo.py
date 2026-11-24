@@ -147,7 +147,7 @@ def free_port() -> int:
 
 def install(profile: dict, db: str, modules: list[str], data_dir: Path, log_file: Path, label: str, *,
             cwd: Optional[Path] = None, python_args: list[str] = (), odoo_args: list[str] = (),
-            time_limit: Optional[float] = None) -> LogInfo:
+            time_limit: Optional[float] = None, extra_env: Optional[dict] = None) -> LogInfo:
     """Install modules in a database with the odoo-bin of a profile, following Odoo's log live (it is appended to
     `log_file`). `python_args` come before odoo-bin (e.g. to run it under coverage), `odoo_args` after its options.
     `time_limit`: the minutes a test, or the setUpClass of a test class, may take: it is stopped and fails beyond
@@ -156,12 +156,13 @@ def install(profile: dict, db: str, modules: list[str], data_dir: Path, log_file
     + TEST_MARGIN minutes during the tests, the queries running on the database are cancelled (a long query: the test
     fails, the run goes on); if that is not enough after CANCEL_GRACE seconds (or outside the tests, after
     + SILENCE_MARGIN minutes), Odoo is killed (`info.timed_out`, `info.stuck`). Progress, not any line: a stuck test
-    may keep logging."""
+    may keep logging. `extra_env`: more environment variables for Odoo (jsa mutation: which mutant is active)."""
     odoo_bin = [str(TIME_LIMIT), f"{time_limit:g}", profile['odoo_bin']] if time_limit else [profile['odoo_bin']]
     cmd = [profile['python'], *python_args, *odoo_bin, "-d", db, "--addons-path", ",".join(profile['addons_paths']),
            "--data-dir", str(data_dir), "--http-port", str(free_port()), "--stop-after-init", "--max-cron-threads=0",
            "--log-level=info", "-i", ",".join(modules), *odoo_args]
     env = with_lock_timeout(config.odoo_env(profile), time_limit) if time_limit else config.odoo_env(profile)
+    env.update(extra_env or {})
     info, status, start = LogInfo(), StatusLine(interval=30), time.monotonic()
     with open(log_file, "a", encoding="utf-8") as log:
         log.write(f"\n===== {label}: {' '.join(cmd)}\n")

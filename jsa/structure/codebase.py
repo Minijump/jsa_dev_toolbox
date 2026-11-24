@@ -276,6 +276,7 @@ def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str]
     instead of being left out and the others tried again (jsa backfill).
     Returns the run added to the history, None when nothing was measured."""
     reviewed = security.load_reviewed(config.REVIEWED_FILE)  # a mistake there stops before anything is measured
+    reviewed_changes = security.load_reviewed(config.REVIEWED_FILE, 'mutation')
     written = code_date(roots)  # before Odoo runs
     found = find_addons(roots)
     manifests = read_manifests(found)
@@ -368,7 +369,7 @@ def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str]
         typer.echo(f"{'⚠️' if failed else '✅'} Standard modules: {sum(r['tests'] for r in standard.values())} test(s) "
                    f"in {len(standard)} module(s), {failed} failed")
     report.write_reports(loc, dependencies, results, out_dir, state_extra, run, standard,
-                         count_measures(addons, measures), trends, reviewed)
+                         count_measures(addons, measures), trends, reviewed, reviewed_changes)
     return run
 
 

@@ -124,6 +124,7 @@ button.copy{font-size:12px;padding:2px 8px}
 details.rule summary{cursor:pointer}details.rule p{color:var(--ink2);margin:4px 0 6px;max-width:900px}
 #security details>summary{cursor:pointer;margin-top:12px}
 #security table td{vertical-align:top}#security table td:nth-child(2){white-space:nowrap}
+.mutated h3{font-size:14px;margin:16px 0 4px}#mutation details>summary{cursor:pointer;margin-top:8px}
 footer{color:var(--muted);font-size:12px;margin-top:8px}
 """
 
@@ -461,12 +462,14 @@ def _detail(name: str, entry: dict, state: dict, used_by: list[str], enterprise:
     return "".join(parts)
 
 
-def _table(state: dict, enterprise: dict, reviewed: Optional[dict] = None) -> str:
+def _table(state: dict, enterprise: dict, reviewed: Optional[dict] = None, mutation: Optional[dict] = None) -> str:
     used_by = {name: sorted(n for n, e in state.items() if name in e.get('depends', [])) for name in state}
     to_review = {name: sum(1 for f in e.get('security') or [] if f['id'] not in (reviewed or {})) for name, e in state.items()}
+    scores = {name: mutation_score(result) for name, result in (mutation or {}).items()}
     columns = [("name", "Addon", ""), ("rank", "Status", ""), ("coverage", "Coverage", ""), ("tests", "Tests", ""),
                ("failed", "Failed", "num"), ("loc", "Lines of code", "num"), ("usedby", "Used by", "num"),
-               ("ent", "Enterprise", "num"), ("security", "Security", "num")]
+               ("ent", "Enterprise", "num"), ("security", "Security", "num")] + (
+              [("mutation", "Mutation", "num")] if mutation else [])
     head = "".join(f'<th data-key="{key}" class="{css}">{label}</th>' for key, label, css in columns)
     bodies = []
     for name, entry in sorted(state.items(), key=lambda item: (STATUS_RANK[report.status(item[1])], item[0])):
@@ -475,13 +478,17 @@ def _table(state: dict, enterprise: dict, reviewed: Optional[dict] = None) -> st
         failed = len(entry.get('failed') or [])
         ent = enterprise.get(name, {})
         ent_cell = f'<span class="st ent" title="{E(", ".join(ent))}"><b>◆</b>{len(ent)}</span>' if ent else ""
+        value = scores.get(name)
+        mutation_cell = (f'<td class="num" title="Changes of its code noticed by the tests (jsa mutation)">'
+                         f'{"" if value is None else f"{value}%"}</td>') if mutation else ""
         bodies.append(
             f'<tbody class="addon" data-name="{E(name.lower())}" data-status="{state_name}" data-rank="{STATUS_RANK[state_name]}" '
             f'data-coverage="{coverage}" data-tests="{entry.get("tests") or 0}" data-failed="{failed}" data-loc="{entry.get("loc", 0)}" '
-            f'data-usedby="{len(used_by[name])}" data-ent="{len(ent)}" data-security="{to_review[name]}"><tr><td class="name">{E(name)}</td><td>{_status_html(state_name)}</td>'
+            f'data-usedby="{len(used_by[name])}" data-ent="{len(ent)}" data-security="{to_review[name]}" '
+            f'data-mutation="{-1 if value is None else value}"><tr><td class="name">{E(name)}</td><td>{_status_html(state_name)}</td>'
             f'<td>{_coverage_html(entry)}</td><td>{_tests_html(entry)}</td><td class="num">{failed or ""}</td>'
             f'<td class="num">{entry.get("loc", 0):,}</td><td class="num">{len(used_by[name]) or ""}</td><td class="num">{ent_cell}</td>'
-            f'<td class="num" title="Security findings to review">{to_review[name] or ""}</td></tr>'
+            f'<td class="num" title="Security findings to review">{to_review[name] or ""}</td>{mutation_cell}</tr>'
             f'<tr class="detail"><td colspan="{len(columns)}">{_detail(name, entry, state, used_by[name], ent)}</td></tr></tbody>')
     options = "".join(f'<option value="{name}">{label}</option>' for name, (label, _, _) in STATUS.items())
     options += '<option value="enterprise">Needs Odoo enterprise</option>'
@@ -543,6 +550,97 @@ def _security(state: dict, reviewed: dict, before: Optional[set]) -> str:
                  f'changed or was removed), they can go: {", ".join(f"<code>{E(i)}</code>" for i in stale)}</p>')
     return (f'<section id="security"><h2>Security review ({len(to_review)} to review'
             + (f', {fresh} new' if fresh else '') + f')</h2>{body}</section>')
+
+
+REMOVALS = ("remove call", "remove assignment", "remove continue/break")  # mutants.REMOVALS
+
+
+def mutation_counts(result: dict) -> dict:
+    """How many changes of 'jsa mutation' the tests noticed (killed), did not (survived), never ran (not reached)."""
+    statuses = [m.get('status') for m in result.get('mutants', [])]
+    return {status: statuses.count(status) for status in ('killed', 'survived', 'not reached')}
+
+
+def mutation_score(result: dict) -> Optional[int]:
+    """Of the changes the tests reach, the share they notice (killed / (killed + survived)); None when none."""
+    counts = mutation_counts(result)
+    reached = counts['killed'] + counts['survived']
+    return round(100 * counts['killed'] / reached) if reached else None
+
+
+def _change_html(mutant: dict) -> str:
+    """'If <code>move._post()</code> is removed, no test fails.'"""
+    short = lambda text: E(text if len(text) <= 160 else text[:159] + "…")
+    if mutant.get('op') in REMOVALS:
+        return f"If <code>{short(mutant['original'])}</code> is removed, no test fails."
+    return f"If <code>{short(mutant['original'])}</code> becomes <code>{short(mutant['mutated'])}</code>, no test fails."
+
+
+def mutation_entry(addon: str, mutant: dict) -> str:
+    """The lines to copy into reviewed.toml for a change that cannot matter (ASCII: pasted in any editor)."""
+    return (f"[[mutation]]\nid = \"{mutant['id']}\"  # {addon}/{mutant['file']}:{mutant['line']} | {mutant['function']} | "
+            f"{mutant['op']}\nreason = \"\"\n")
+
+
+def _mutation(results: dict, reviewed: dict) -> str:
+    """What 'jsa mutation' found: per addon, its score, the changes of its code that no test noticed (grouped by
+    function, as sentences), those reviewed folded, its score run after run."""
+    if not results:
+        return ""
+    blocks, to_review_total = [], 0
+    for addon, result in sorted(results.items()):
+        counts, value = mutation_counts(result), mutation_score(result)
+        survivors = sorted((m for m in result.get('mutants', []) if m.get('status') == 'survived'),
+                           key=lambda m: (m['file'], m['line']))
+        to_review = [m for m in survivors if m['id'] not in reviewed]
+        done = [m for m in survivors if m['id'] in reviewed]
+        to_review_total += len(to_review)
+        when = E(str(result.get('date', ''))[:16].replace('T', ' '))
+        notes = []
+        if result.get('browser_tests'):
+            notes.append(f"{result['browser_tests']} browser test(s) (tours) not run: what only they check counts as not "
+                         "noticed")
+        if result.get('left_out'):
+            notes.append("left out, failing or flaky without any change: " + ", ".join(f"<code>{E(t)}</code>"
+                                                                                       for t in result['left_out']))
+        head = (f'<h3>{E(addon)} · {value if value is not None else "–"}{"%" if value is not None else ""} of the changes '
+                f'reached noticed</h3><p class="meta" style="margin:0 0 6px">{counts["killed"]} change(s) noticed by the '
+                f'tests, {counts["survived"]} not noticed, {counts["not reached"]} not reached by any test (the coverage '
+                f'shows those) · {result.get("tests", 0)} tests · measured {when}'
+                + (f' with Odoo {result["odoo"]}' if result.get('odoo') else '')
+                + (f' in {_seconds(result["seconds"])}' if result.get('seconds') else '') + '</p>'
+                + "".join(f'<p class="meta" style="margin:0 0 6px">{note}</p>' for note in notes))
+
+        def item(m: dict, reason: Optional[str] = None) -> str:
+            end = (f'<div class="why">Reviewed: {E(reason)}</div>' if reason is not None else
+                   f'<button class="copy" data-copy="{E(mutation_entry(addon, m))}">Copy for reviewed.toml</button>')
+            again = ' · checked by a real install (its code also runs while installing)' if m.get('checked') else ''
+            return (f'<li class="finding"><strong>{E(m["function"])}</strong> · <code>{E(m["file"])}:{m["line"]}</code>'
+                    f'{again}<div>{_change_html(m)}</div>{end}</li>')
+
+        body = head + (f'<ul class="findings">{"".join(item(m) for m in to_review)}</ul>' if to_review else
+                       '<p class="meta">Every change the tests reach is noticed.</p>' if not done else '')
+        if done:
+            body += (f'<details><summary>Reviewed ({len(done)})</summary><ul class="findings">'
+                     + "".join(item(m, reviewed[m['id']]) for m in done) + '</ul></details>')
+        runs = [(str(r.get('date', ''))[:16].replace('T', ' '), round(100 * r['killed'] / (r['killed'] + r['survived'])))
+                for r in result.get('runs', []) if r.get('killed', 0) + r.get('survived', 0)]
+        if len(runs) >= 2:
+            body += '<p class="meta" style="margin:12px 0 0">Its score, run after run</p>' + line_chart(
+                f"Score of {addon}", runs, "%", 100, True)
+        blocks.append(f'<div class="mutated">{body}</div>')
+    return ('<section id="mutation"><h2>Untested behaviour: mutation testing'
+            + (f' ({to_review_total} change(s) not noticed)' if to_review_total else '') + '</h2>'
+            '<p class="meta" style="margin:0 0 10px"><code>jsa mutation</code> changes the code of an addon one small '
+            'change at a time (<code>&gt;</code> becomes <code>&lt;=</code>, a call is removed, ...) and runs the tests '
+            'that reach it: a change no test notices is behaviour the tests run without checking it. When one cannot '
+            'matter, copy its lines into <code>reviewed.toml</code> and say why in <code>reason</code>.</p>'
+            + "".join(blocks) + '</section>')
+
+
+def _seconds(seconds: float) -> str:
+    seconds = int(seconds)
+    return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m{seconds % 60:02d}s"
 
 
 def _graph(graphs: dict) -> str:
@@ -816,7 +914,9 @@ def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Option
         f'<title>Codebase report</title><style>{CSS}</style><style id="graph-css">{GRAPH_CSS}</style></head><body><main>',
         f'<h1>Codebase report</h1><p class="meta">Generated {E(when)} · {how}</p>',
         _tiles(summary, old_summary, previous, series), _attention(state, meta.get('standard_tests')), _standard(meta.get('standard_tests')), _enterprise(enterprise), _changes(diff, old_date),
-        _security(state, meta.get('reviewed') or {}, meta.get('security_before')), _table(state, enterprise, meta.get('reviewed')),
+        _security(state, meta.get('reviewed') or {}, meta.get('security_before')),
+        _mutation(meta.get('mutation') or {}, meta.get('reviewed_changes') or {}),
+        _table(state, enterprise, meta.get('reviewed'), meta.get('mutation')),
         _graph(graphs), _trend(history, meta.get('measures') or [], meta.get('trends'), meta.get('reviewed')),
         '<footer>Files next to this report: <code>state.json</code> (last results, reused for unchanged addons), '
         '<code>history.jsonl</code> (one line per measured run), <code>coverage_odoo.log</code> (full Odoo log of the last measure).</footer>',

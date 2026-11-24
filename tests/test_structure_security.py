@@ -227,8 +227,8 @@ def test_reviewed_file(tmp_path, capsys):
     assert security.load_reviewed(path) == {"abc123": "only managers see the button"}
     for text, why in ((entry, "say in reason why it is fine"),
                       ('[[security]]\nid = "a"\nreason = "b"\nwhy = "c"\n', "has the key(s) why, which do not exist"),
-                      ('[[security]]\nreason = "b"\n', "needs the id of the finding"),
-                      ('security = "x"\n', "write each finding as a [[security]] table"),
+                      ('[[security]]\nreason = "b"\n', "needs the id (the report gives the lines to copy)"),
+                      ('security = "x"\n', "write each one as a [[security]] table"),
                       ('[[security]\n', "not valid TOML")):
         path.write_text(text, encoding="utf-8")
         with pytest.raises(typer.Exit):

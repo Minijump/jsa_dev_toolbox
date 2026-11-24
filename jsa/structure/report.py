@@ -279,6 +279,19 @@ def render_svg(dot_text: str) -> Optional[str]:
     return res.stdout[res.stdout.index('<svg'):]
 
 
+def load_mutation(out_dir: Path) -> dict[str, dict]:
+    """{addon: the results of its last 'jsa mutation'} (out_dir/mutation/<addon>.json)."""
+    found = {}
+    for path in sorted((out_dir / "mutation").glob("*.json")):
+        try:
+            result = json.loads(path.read_text(encoding='utf-8'))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(result, dict) and result.get('addon'):
+            found[result['addon']] = result
+    return found
+
+
 # ---------- orchestration ----------
 
 def load_standard_tests(out_dir: Path) -> Optional[dict]:
@@ -291,12 +304,14 @@ def load_standard_tests(out_dir: Path) -> Optional[dict]:
 
 def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Result]], out_dir: Path,
                   extra: Optional[dict] = None, run: Optional[dict] = None, standard: Optional[dict] = None,
-                  measures: Optional[dict] = None, trends: Optional[dict] = None, reviewed: Optional[dict] = None):
+                  measures: Optional[dict] = None, trends: Optional[dict] = None, reviewed: Optional[dict] = None,
+                  reviewed_changes: Optional[dict] = None):
     """`run` describes a coverage run ({'mode', 'profile'}) when addons were measured now: it is added to the history.
     `standard`: the results of the standard modules' tests run now; else those of the last time they were run.
     `measures`: the counts of [[report.measures]] of config.toml ({label: count}), recorded with the run.
     `trends`: [report] trends / trends_open of config.toml, the charts shown and unfolded (none: the default).
-    `reviewed`: the security findings found fine ({id: reason}, reviewed.toml)."""
+    `reviewed`: the security findings found fine ({id: reason}, reviewed.toml). `reviewed_changes`: the same for the
+    changes of 'jsa mutation' that no test notices ([[mutation]]), whose results are read in out_dir/mutation/."""
     reviewed = reviewed or {}
     out_dir.mkdir(parents=True, exist_ok=True)
     old, old_date = load_state(out_dir)
@@ -322,7 +337,8 @@ def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Res
                               old_date, load_history(out_dir / HISTORY_FILE), graphs,
                               {'generated_at': now, **(run or {}), 'standard_tests': standard_tests,
                                'measures': list(measures or {}), 'trends': trends or {}, 'reviewed': reviewed,
-                               'security_before': security_ids(old)})
+                               'security_before': security_ids(old), 'mutation': load_mutation(out_dir),
+                               'reviewed_changes': reviewed_changes or {}})
     (out_dir / REPORT_FILE).write_text(html, encoding='utf-8')
     (out_dir / STATE_FILE).write_text(json.dumps({'schema': SCHEMA, 'generated_at': now, 'addons': new,
                                                   'standard_tests': standard_tests}, indent=1), encoding='utf-8')

@@ -151,7 +151,8 @@ then the other applications and modules. Useful before moving a database to the 
   another custom addon).
 - **Security review**: the places of your code to look at, below.
 - **A table of the addons**, sortable and filterable; a click opens the failed tests, the lines not covered, the
-  dependencies and who uses the addon. The last column counts its security findings to review.
+  dependencies and who uses the addon. A column counts its security findings to review; once `jsa mutation` measured
+  it, another gives its mutation score (below).
 
 ![Table of the addons](images/report_table.png)
 
@@ -298,6 +299,36 @@ charts. Every Odoo version is on the same curve, so the coverage on Odoo 17 and 
 where the version changes, and when there are several, each version alone is one choice away. The runs made before
 jsa 0.31 counted the coverage another way (every line of the files, installing included, so higher): to keep the
 trend comparable, delete `codebase_analysis/history.jsonl` (and run `jsa backfill` again if you use it).
+
+**Mutation testing: what the tests run without checking it.** Coverage says which code the tests run, not whether they
+check what it does. `jsa mutation <addon>... -p <profile>` changes the code of an addon one small change at a time (a
+mutant: `>` becomes `<=`, `and` becomes `or`, a `not` is removed, `+` becomes `-`, a number changes, a call or an
+assignment to a field is removed, ...) and runs the tests that reach it. A change that no test notices is listed in the
+report: "If `move._post()` is removed, no test fails". Meant for your critical addons (`[mutation] addons` of
+`config.toml` when none is given); Linux only (WSL).
+- How long: Odoo is loaded once, then each mutant runs in a copy of it (fork), with only the tests that reach it, on
+  several workers (`-w`, each an Odoo with its own database). Measured: 2 minutes for an addon of 800 lines, 3 when
+  its test classes build a lot of data (accounting). The addons that did not change (nor those they depend on, Odoo,
+  the rules) keep their results: running it again costs nothing (`--all` measures them again).
+- What is never changed: text (error messages, strings), `raise`, logging, `_()`, `ensure_one()`, `super()` calls,
+  field definitions; the kinds of changes that cannot matter (the id of `(0, 0, vals)`, the default of
+  `.get(k, 0.0)`, `return True` of a button, the number of a comparison) or that nobody tests (the action a method
+  returns to the web client, chatter messages and activities, names taken from a sequence); the methods matching
+  `[mutation] skip` (globs: `"action_view_*"`, `"SaleOrder._compute_display_name"`).
+- No false alarm, as far as it can: the tests run twice first, and those failing or flaky are left out; a change
+  that survives but whose code also runs while installing (values computed then, on the demo data) is checked again
+  by a real install with that change. Browser tests (tours) are not run: what only they check shows as not noticed
+  (the report says how many). Some changes cannot matter at all (a fast and a slow path giving the same result): in
+  the prototype, about 3 in 100; when one is listed, copy its lines into `reviewed.toml` and say why in `reason`
+  (`[[mutation]]`, like the security review): it is shown folded.
+- In the report: a section per addon (its score: the share of the changes reached that a test noticed; the changes
+  not noticed, by function; its score run after run), and a "Mutation" column in the table. "Not reached by any test"
+  is the coverage's job: those are only counted.
+
+![Mutation testing](images/report_mutation.png)
+
+- Files: `codebase_analysis/mutation/<addon>.json` (the results), `<addon>_odoo.log` (installing), `<addon>_tests.log`
+  (the tests of the workers).
 
 ## Finding the commit that broke a test
 
