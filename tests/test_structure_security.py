@@ -260,26 +260,65 @@ def test_the_report_lists_the_findings_and_the_chart_counts_those_not_reviewed(t
                         + '[[security]]\nid = "0000000000"\nreason = "gone"\n', encoding="utf-8")
     (roots / "my_addon" / "models" / "other.py").write_text("x = eval('1')\n")
     codebase.analyse(conf, [roots], out)
-    assert "🔒 Security review: 13 to review, 1 new (1 reviewed)" in capsys.readouterr().out
+    assert "🔒 Security review: 13 to review (+1 new), 1 reviewed" in capsys.readouterr().out
     page = (out / "report.html").read_text(encoding="utf-8")
-    assert '<h2>Security review (13 to review, 1 new)</h2>' in page
-    new = page.index('<span class="tag">new</span>')
-    assert new < page.index("Reviewed (1)") and "models/other.py" in page[new:new + 300]  # the new one first
-    assert "Reviewed: checked: managers only" in page
+    assert '<h2>Security review (13 to review: <span class="neg">+1 new</span> since the previous report)</h2>' in page
+    # each rule holds its findings, in its own fold, with the change since the previous report in its summary
+    evals =page[page.index('data-rule="eval"'):page.index('</section>', page.index('data-rule="eval"'))]
+    assert '<span class="rcount">2 to review (<span class="neg">+1 new</span>)</span>' in evals
+    assert evals.index('<span class="tag">new</span>') < evals.index("models/other.py") < evals.index("models/sale.py")
+    sudo_fold = page[page.index('data-rule="sudo_rpc"'):page.index('data-rule="route_sudo"')]
+    assert "1 to review · 1 reviewed" in sudo_fold and "Reviewed: checked: managers only" in sudo_fold
+    assert 'To switch it off, in config.toml: <code>[security] skip = ["sudo_rpc"]</code>' in sudo_fold
     assert "match no finding anymore" in page and "<code>0000000000</code>" in page
+
+    # a finding fixed: gone
+    (roots / "my_addon" / "models" / "other.py").unlink()
+    codebase.analyse(conf, [roots], out)
+    assert "🔒 Security review: 12 to review (-1 gone), 1 reviewed" in capsys.readouterr().out
+    page = (out / "report.html").read_text(encoding="utf-8")
+    assert '<span class="rcount">1 to review (<span class="pos">−1 gone</span>)</span>' in page
 
     # the history keeps the ids of each rule: the chart counts those not reviewed, with today's reviewed.toml
     state, _ = report.load_state(out)
     run = {"date": "2026-11-24T10:00:00", "mode": "whole", "odoo": 19, "coverage": 50.0, "loc": 10,
            **{"security": report.summarize(state)["security"]}}
-    assert sum(len(ids) for ids in run["security"].values()) == 14
-    assert report_html.open_findings(run, {sudo["id"]: "x"}) == 13 and report_html.open_findings({}, {}) is None
+    assert sum(len(ids) for ids in run["security"].values()) == 13
+    assert report_html.open_findings(run, {sudo["id"]: "x"}) == 12 and report_html.open_findings({}, {}) is None
+    assert report_html.open_findings(run, {sudo["id"]: "x"}, off=["eval"]) == 11  # a rule switched off: not counted
     chart = report_html._trend([run, {**run, "date": "2026-11-25T10:00:00"}], [], None, {sudo["id"]: "x"})
     section = chart[chart.index('data-chart="security"'):]
-    assert '<span class="tname">Security findings to review</span><span class="tnow">13</span>' in section
+    assert '<span class="tname">Security findings to review</span><span class="tnow">12</span>' in section
     assert "sudo() in a method callable over RPC: 1" in section  # the tooltip: rule by rule
     old_runs = report_html._trend([{**run, "security": None}, {**run, "security": None}], [])
     assert "recorded from the next run measuring the coverage (-c)" in old_runs[old_runs.index('data-chart="security"'):]
+
+
+def test_rules_switched_off_in_config(tmp_path, monkeypatch, capsys):
+    assert security.switched_off({}) == []
+    assert security.switched_off({"security": {"skip": ["csrf_off", "sql*"]}}) == ["csrf_off", "sql_built"]
+    assert len(security.switched_off({"security": {"skip": ["*"]}})) == len(security.RULES)
+    for wrong, why in (({"security": {"skip": ["csrf"]}}, "skip: no rule named 'csrf'. The rules: sudo_rpc, route_sudo"),
+                       ({"security": {"skip": "csrf_off"}}, "skip must be a list of rules"),
+                       ({"security": {"rules": []}}, "has the key(s) rules, which do not exist")):
+        with pytest.raises(typer.Exit):
+            security.switched_off(wrong)
+        assert why in capsys.readouterr().out
+    roots, out = tmp_path / "addons", tmp_path / "out"
+    make_addon(roots)
+    monkeypatch.setattr(config, "REVIEWED_FILE", tmp_path / "reviewed.toml")
+    codebase.analyse({"codebase": {"addons_roots": [str(roots)]}}, [roots], out)
+    capsys.readouterr()
+    codebase.analyse({"codebase": {"addons_roots": [str(roots)]}, "security": {"skip": ["eval", "csrf_off"]}}, [roots], out)
+    assert "gone" not in capsys.readouterr().out  # the findings of a rule switched off are not "gone"
+    state, _ = report.load_state(out)
+    assert {f["rule"] for f in state["my_addon"]["security"]} & {"eval", "csrf_off"} == set()
+    page = (out / "report.html").read_text(encoding="utf-8")
+    assert 'data-rule="eval"' not in page and "Switched off in config.toml" in page and "<code>csrf_off</code>" in page
+    # every rule off: no security review at all (no section, no chart)
+    codebase.analyse({"codebase": {"addons_roots": [str(roots)]}, "security": {"skip": ["*"]}}, [roots], out)
+    state, _ = report.load_state(out)
+    assert "security" not in state["my_addon"] and 'id="security"' not in (out / "report.html").read_text(encoding="utf-8")
 
 
 def test_counts_have_whole_ticks():

@@ -344,7 +344,8 @@ def backfill(dry_run: bool = typer.Option(False, "--dry-run", help="Show the com
         leaving = [line for line in history if synced(line, wanted, file_events) is None]
         measured = {sha for sha, mode in wanted if (sha, mode) in done}
         to_count = missing_measures(history, measured, [m.label for m in measures])
-        to_review = missing_security(history, measured)
+        off = security.switched_off(conf)  # [security] skip of config.toml: every rule off = no review at all
+        to_review = missing_security(history, measured) if len(off) < len(security.RULES) else set()
         if leaving:
             typer.echo(f"🗑️ {len(leaving)} line(s) of the history no longer in backfill.toml (commits, modes, events): "
                        + ("would be removed" if dry_run else "removed"))
@@ -377,7 +378,8 @@ def backfill(dry_run: bool = typer.Option(False, "--dry-run", help="Show the com
                 checkout(tree, sha)
                 addons_found = find_addons(in_tree)
                 manifests = read_manifests(addons_found, warn=False)
-                findings, _ = security.scan({a.name: a for a in addons_found if a.name in manifests}, codebase.code_files)
+                findings, _ = security.scan({a.name: a for a in addons_found if a.name in manifests}, codebase.code_files,
+                                            off)
                 found[sha] = security.by_rule(vars(f) for f in findings)
                 typer.echo(f"   🔒 {sha[:9]}: {len(findings)} finding(s)")
             rewrite_history(history_file, lambda line: with_security(line, found))

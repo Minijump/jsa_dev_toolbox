@@ -9,6 +9,7 @@ the id of an access right or of a template) and its code.
 """
 import ast
 import csv
+import fnmatch
 import hashlib
 import inspect
 import io
@@ -115,12 +116,38 @@ def read_code(addons: dict[str, Path], files_of: Callable[[Path], Iterable[Path]
     return code
 
 
-def scan(addons: dict[str, Path], files_of: Callable[[Path], Iterable[Path]]) -> tuple[list[Finding], list[str]]:
-    """The findings of every rule in the files `files_of` gives for each addon (the code: no tests, translations,
-    migrations), and the python files that could not be read."""
+def switched_off(conf: dict) -> list[str]:
+    """The rules switched off in config.toml: [security] skip = ["csrf_off", ...] (their keys, globs: "*" = all). A
+    mistake stops the command (before anything is measured)."""
+    def refuse(why: str):
+        typer.echo(f"❌ config.toml: [security] {why}")
+        raise typer.Exit(code=1)
+
+    section = conf.get('security', {})
+    if not isinstance(section, dict):
+        refuse("must be a table: skip = [\"csrf_off\"]")
+    unknown = sorted(set(section) - {'skip'})
+    if unknown:
+        refuse(f"has the key(s) {', '.join(unknown)}, which do not exist (misspelled?): use skip")
+    skip = section.get('skip', [])
+    keys = [r.key for r in RULES]
+    if not isinstance(skip, list) or not all(isinstance(s, str) for s in skip):
+        refuse(f"skip must be a list of rules, e.g. skip = [\"csrf_off\"]. The rules: {', '.join(keys)}")
+    wrong = [s for s in skip if not fnmatch.filter(keys, s)]
+    if wrong:
+        refuse(f"skip: no rule named {', '.join(repr(s) for s in wrong)}. The rules: {', '.join(keys)}")
+    return [key for key in keys if any(fnmatch.fnmatchcase(key, s) for s in skip)]
+
+
+def scan(addons: dict[str, Path], files_of: Callable[[Path], Iterable[Path]],
+         off: Iterable[str] = ()) -> tuple[list[Finding], list[str]]:
+    """The findings of every rule (but those switched `off`) in the files `files_of` gives for each addon (the code:
+    no tests, translations, migrations), and the python files that could not be read."""
     code = read_code(addons, files_of)
     findings, ids = [], set()
     for r in RULES:
+        if r.key in off:
+            continue
         for spot in r.check(code):
             lines = [spot.file.lines[n - 1] if 0 < n <= len(spot.file.lines) else "" for n in spot.lines]
             text = "\n".join(" ".join(line.split()) for line in lines)

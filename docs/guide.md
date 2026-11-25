@@ -232,9 +232,14 @@ pitfalls of Odoo's security documentation:
 | | HTML not escaped: `Markup()` around a built string, `t-raw`, an `Html` field with `sanitize=False` |
 | | `eval()` or `exec()` |
 
-In the page, a click on a rule shows what it looks for and what it leaves out (the same text as in the code:
-`jsa/structure/security.py`, one function per rule). The findings appeared since the previous report come first,
-marked "new".
+In the page, each rule is a line that unfolds: its line says how many findings it has to review and what changed
+since the previous report (`+2 new`, `−1 gone`; the section's title gives the totals); unfolded, it shows what it
+looks for and what it leaves out (the same text as in the code: `jsa/structure/security.py`, one function per rule),
+then its findings, the new ones first. A rule you do not want can be switched off in `config.toml`:
+```toml
+[security]
+skip = ["csrf_off", "company_rule"]   # the keys of the rules (each fold gives its key); ["*"] = no review at all
+```
 
 ![Security review](images/report_security.png)
 
@@ -245,7 +250,7 @@ them into `reviewed.toml`, next to `config.toml` (yours: ignored by git), and sa
 id = "2703320406"  # sudo() in a method callable over RPC | my_addon/models/sale.py | Sale.action_confirm
 reason = "only managers reach it: the method checks the group"
 ```
-It then leaves the list (it is shown folded under "Reviewed", with its reason) and the chart. Its id stays the same
+It then leaves the list (it is shown folded under "Reviewed" in its rule, with its reason) and the chart. Its id stays the same
 when lines move, and changes when its code changes (to look at again). The lines of `reviewed.toml` whose finding is
 gone are pointed out; a line without a reason stops the command. The chart "Security findings to review" counts, for
 each run, the findings not reviewed in today's `reviewed.toml`: reviewing one lowers the whole curve. Like your

@@ -277,6 +277,7 @@ def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str]
     Returns the run added to the history, None when nothing was measured."""
     reviewed = security.load_reviewed(config.REVIEWED_FILE)  # a mistake there stops before anything is measured
     reviewed_changes = security.load_reviewed(config.REVIEWED_FILE, 'mutation')
+    off = security.switched_off(conf)  # [security] skip of config.toml
     written = code_date(roots)  # before Odoo runs
     found = find_addons(roots)
     manifests = read_manifests(found)
@@ -356,20 +357,22 @@ def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str]
         state_extra[name]['enterprise'] = None if enterprise is None else sorted(set(dependencies[name]) & enterprise)
         if state_extra[name]['enterprise']:
             typer.echo(f"⚠️ {name} depends on Odoo enterprise: {', '.join(state_extra[name]['enterprise'])}")
-    # the places to review for security, read in the code (seconds): every run, with or without -c
-    findings, unreadable = security.scan(addons, code_files)
-    for name in addons:
-        state_extra[name]['security'] = [asdict(f) for f in findings if f.addon == name]
-    if unreadable:
-        typer.echo(f"⚠️ Security review: {len(unreadable)} python file(s) not read (syntax error): "
-                   + ", ".join(unreadable[:3]) + (", ..." if len(unreadable) > 3 else ""))
+    # the places to review for security, read in the code (seconds): every run, with or without -c; none when every
+    # rule is switched off
+    if len(off) < len(security.RULES):
+        findings, unreadable = security.scan(addons, code_files, off)
+        for name in addons:
+            state_extra[name]['security'] = [asdict(f) for f in findings if f.addon == name]
+        if unreadable:
+            typer.echo(f"⚠️ Security review: {len(unreadable)} python file(s) not read (syntax error): "
+                       + ", ".join(unreadable[:3]) + (", ..." if len(unreadable) > 3 else ""))
 
     if standard:
         failed = sum(len(r['failed']) for r in standard.values())
         typer.echo(f"{'⚠️' if failed else '✅'} Standard modules: {sum(r['tests'] for r in standard.values())} test(s) "
                    f"in {len(standard)} module(s), {failed} failed")
     report.write_reports(loc, dependencies, results, out_dir, state_extra, run, standard,
-                         count_measures(addons, measures), trends, reviewed, reviewed_changes)
+                         count_measures(addons, measures), trends, reviewed, reviewed_changes, off)
     return run
 
 

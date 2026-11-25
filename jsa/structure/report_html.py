@@ -121,9 +121,15 @@ ul.findings{padding:0;margin:8px 0 0}
 white-space:pre-wrap;word-break:break-word}
 .tag{display:inline-block;font-size:11px;font-weight:600;border-radius:4px;padding:0 6px;margin-right:6px;background:var(--serious);color:#fff}
 button.copy{font-size:12px;padding:2px 8px}
-details.rule summary{cursor:pointer}details.rule p{color:var(--ink2);margin:4px 0 6px;max-width:900px}
-#security details>summary{cursor:pointer;margin-top:12px}
-#security table td{vertical-align:top}#security table td:nth-child(2){white-space:nowrap}
+details.rule{border-top:1px solid var(--grid)}
+details.rule>summary{display:grid;grid-template-columns:10px minmax(220px,400px) 120px 1fr;gap:12px;align-items:baseline;
+padding:8px 0;cursor:pointer;list-style:none}
+details.rule>summary::-webkit-details-marker{display:none}
+details.rule>summary::before{content:"▸";color:var(--muted)}details.rule[open]>summary::before{content:"▾"}
+details.rule>summary:hover .rname{color:var(--accent)}
+.rname{font-weight:600}.rkind{color:var(--ink2);font-size:13px}.rcount{font-variant-numeric:tabular-nums}
+details.rule>p{color:var(--ink2);margin:4px 0 6px 22px;max-width:900px}details.rule>ul.findings{margin-left:22px}
+details.reviewed{margin:0 0 10px 22px}details.reviewed>summary{cursor:pointer}
 .mutated h3{font-size:14px;margin:16px 0 4px}#mutation details>summary{cursor:pointer;margin-top:8px}
 footer{color:var(--muted);font-size:12px;margin-top:8px}
 """
@@ -212,10 +218,7 @@ document.querySelectorAll('.depgraph').forEach(box => {
   };
   box.zoom(0);
 });
-// ----- security review: the findings of one rule, the lines to copy into reviewed.toml
-const rule = document.getElementById('srule');
-if (rule) rule.addEventListener('change', () =>
-  document.querySelectorAll('#security > ul.findings > .finding').forEach(li => li.hidden = !!rule.value && li.dataset.rule !== rule.value));
+// ----- security review, mutation testing: the lines to copy into reviewed.toml
 document.querySelectorAll('button.copy').forEach(btn => btn.addEventListener('click', () => {
   const text = btn.dataset.copy, label = btn.textContent;
   const done = () => { btn.textContent = 'Copied: paste it into reviewed.toml, then say why in reason'; setTimeout(() => btn.textContent = label, 2500); };
@@ -499,57 +502,69 @@ def _table(state: dict, enterprise: dict, reviewed: Optional[dict] = None, mutat
             f'<table id="addons"><thead><tr>{head}</tr></thead>{"".join(bodies)}</table></section>')
 
 
-def _security(state: dict, reviewed: dict, before: Optional[set]) -> str:
-    """The security review: what each rule looks for (the docstring of its function), the findings to review (the
-    new ones first: not in the previous report), those reviewed with their reason, the stale lines of reviewed.toml."""
+def _change(new: int, gone: int) -> str:
+    """'+2 new, −1 gone' since the previous report ('' when nothing changed)."""
+    parts = ([f'<span class="neg">+{new} new</span>'] if new else []) + ([f'<span class="pos">−{gone} gone</span>'] if gone else [])
+    return ", ".join(parts)
+
+
+def _security(state: dict, reviewed: dict, before: Optional[dict], off=()) -> str:
+    """The security review, one fold per rule: in its summary, how many findings to review and the change since the
+    previous report (+ new, − gone); inside, what it looks for (the docstring of its function), its findings (the new
+    ones first), those reviewed (folded, with their reason). Then the stale lines of reviewed.toml and the rules
+    switched off in config.toml. `before`: {id: rule} of the previous report, None if it had no security review."""
     if not any('security' in e for e in state.values()):
         return ""
     findings = [f for e in state.values() for f in e.get('security') or []]
-    rank = {r.key: i for i, r in enumerate(security.RULES)}
-    titles = {r.key: r.title for r in security.RULES}
+    current = {f['id'] for f in findings}
     is_new = lambda f: before is not None and f['id'] not in before
-    place = lambda f: (rank.get(f['rule'], len(rank)), f['addon'], f['file'], f['line'])
-    to_review = sorted((f for f in findings if f['id'] not in reviewed), key=lambda f: (not is_new(f), *place(f)))
-    done = sorted((f for f in findings if f['id'] in reviewed), key=place)
-    stale = sorted(reviewed.keys() - {f['id'] for f in findings})
-    fresh = sum(1 for f in to_review if is_new(f))
+    place = lambda f: (f['addon'], f['file'], f['line'])
+    stale = sorted(reviewed.keys() - current)
 
     def item(f: dict, reason: Optional[str] = None) -> str:
         where = f" · {E(f['where'])}" if f.get('where') else ""
         end = (f'<div class="why">Reviewed: {E(reason)}</div>' if reason is not None else
                f'<button class="copy" data-copy="{E(security.review_entry(f))}">Copy for reviewed.toml</button>')
         tag = '<span class="tag">new</span>' if reason is None and is_new(f) else ""
-        return (f'<li class="finding" data-rule="{E(f["rule"])}">{tag}'
-                f'<strong>{E(titles.get(f["rule"], f["rule"]))}</strong> · {E(f["addon"])} · <code>{E(f["file"])}:{f["line"]}</code>'
+        return (f'<li class="finding">{tag}<strong>{E(f["addon"])}</strong> · <code>{E(f["file"])}:{f["line"]}</code>'
                 f'{where}<div class="why">{E(f["why"])}</div><pre>{E(f["code"])}</pre>{end}</li>')
 
-    rows = "".join(
-        f'<tr><td><details class="rule"><summary>{E(r.title)}</summary>'
-        + "".join(f"<p>{E(' '.join(p.split()))}</p>" for p in r.text.split("\n\n")) + '</details></td>'
-        f'<td>{E(r.kind)}</td><td class="num">{sum(1 for f in to_review if f["rule"] == r.key) or ""}</td>'
-        f'<td class="num">{sum(1 for f in done if f["rule"] == r.key) or ""}</td></tr>' for r in security.RULES)
-    options = "".join(f'<option value="{r.key}">{E(r.title)}</option>' for r in security.RULES
-                      if any(f['rule'] == r.key for f in to_review))
+    folds, total, total_new, total_gone = [], 0, 0, 0
+    for r in security.RULES:
+        if r.key in off:
+            continue
+        mine = [f for f in findings if f['rule'] == r.key]
+        to_review = sorted((f for f in mine if f['id'] not in reviewed), key=lambda f: (not is_new(f), *place(f)))
+        done = sorted((f for f in mine if f['id'] in reviewed), key=place)
+        new = sum(1 for f in to_review if is_new(f))
+        gone = sum(1 for i, rule in (before or {}).items() if rule == r.key and i not in current and i not in reviewed)
+        total, total_new, total_gone = total + len(to_review), total_new + new, total_gone + gone
+        change = _change(new, gone)
+        count = ((f"{len(to_review)} to review" if to_review else "nothing to review") + (f" ({change})" if change else "")
+                 + (f" · {len(done)} reviewed" if done else ""))
+        body = ("".join(f"<p>{E(' '.join(p.split()))}</p>" for p in r.text.split("\n\n"))
+                + f'<p class="meta">Its key: <code>{r.key}</code>. To switch it off, in config.toml: '
+                  f'<code>[security] skip = ["{r.key}"]</code></p>')
+        if to_review:
+            body += f'<ul class="findings">{"".join(item(f) for f in to_review)}</ul>'
+        if done:
+            body += (f'<details class="reviewed"><summary>Reviewed ({len(done)})</summary><ul class="findings">'
+                     + "".join(item(f, reviewed[f['id']]) for f in done) + '</ul></details>')
+        folds.append(f'<details class="rule" data-rule="{r.key}"><summary><span class="rname">{E(r.title)}</span>'
+                     f'<span class="rkind">{E(r.kind)}</span><span class="rcount">{count}</span></summary>{body}</details>')
     body = ('<p class="meta" style="margin:0 0 10px">Places of your code to look at, found by reading the files: not '
-            'proof of a flaw. Click a rule to see what it looks for and what it leaves out. When a finding is fine, copy '
-            'its lines into <code>reviewed.toml</code> (next to <code>config.toml</code>) and say why in '
-            '<code>reason</code>: it leaves this list and the chart.</p>'
-            '<table class="plain"><thead><tr><th>Rule</th><th>Kind</th><th class="num">To review</th>'
-            f'<th class="num">Reviewed</th></tr></thead><tbody>{rows}</tbody></table>')
-    if to_review:
-        body += (f'<div class="controls" style="margin-top:14px"><select id="srule" aria-label="Filter by rule">'
-                 f'<option value="">All rules</option>{options}</select></div>'
-                 f'<ul class="findings">{"".join(item(f) for f in to_review)}</ul>')
-    else:
-        body += '<p class="meta">Nothing to review.</p>'
-    if done:
-        body += (f'<details><summary>Reviewed ({len(done)})</summary><ul class="findings">'
-                 + "".join(item(f, reviewed[f['id']]) for f in done) + '</ul></details>')
+            'proof of a flaw. Click a rule for what it looks for, what it leaves out, and its findings. When a finding '
+            'is fine, copy its lines into <code>reviewed.toml</code> (next to <code>config.toml</code>) and say why in '
+            '<code>reason</code>: it leaves the list and the chart.</p>' + "".join(folds))
     if stale:
         body += (f'<p class="meta">{len(stale)} line(s) of <code>reviewed.toml</code> match no finding anymore (the code '
                  f'changed or was removed), they can go: {", ".join(f"<code>{E(i)}</code>" for i in stale)}</p>')
-    return (f'<section id="security"><h2>Security review ({len(to_review)} to review'
-            + (f', {fresh} new' if fresh else '') + f')</h2>{body}</section>')
+    if off:
+        body += ('<p class="meta">Switched off in config.toml (<code>[security] skip</code>): '
+                 + ", ".join(f"<code>{E(key)}</code>" for key in off) + '</p>')
+    change = _change(total_new, total_gone)
+    return (f'<section id="security"><h2>Security review ({total} to review'
+            + (f': {change} since the previous report' if change else '') + f')</h2>{body}</section>')
 
 
 REMOVALS = ("remove call", "remove assignment", "remove continue/break")  # mutants.REMOVALS
@@ -808,21 +823,23 @@ def version_changes(runs: list[dict]) -> list[dict]:
     return found
 
 
-def open_findings(run: dict, reviewed: dict) -> Optional[int]:
-    """The security findings of a run not reviewed (with today's reviewed.toml), None when it has no review."""
+def open_findings(run: dict, reviewed: dict, off=()) -> Optional[int]:
+    """The security findings of a run not reviewed (with today's reviewed.toml), those of the rules switched off left
+    out, None when it has no review."""
     found = run.get('security')
-    return None if found is None else sum(1 for ids in found.values() for i in ids if i not in reviewed)
+    return None if found is None else sum(1 for rule, ids in found.items() if rule not in off for i in ids if i not in reviewed)
 
 
-def _findings_detail(run: dict, reviewed: dict) -> str:
+def _findings_detail(run: dict, reviewed: dict, off=()) -> str:
     """The findings to review of a run, rule by rule (tooltip of a point of the security chart)."""
     titles = {r.key: r.title for r in security.RULES}
-    counts = [(titles.get(key, key), sum(1 for i in ids if i not in reviewed)) for key, ids in (run.get('security') or {}).items()]
+    counts = [(titles.get(key, key), sum(1 for i in ids if i not in reviewed))
+              for key, ids in (run.get('security') or {}).items() if key not in off]
     return ", ".join(f"{title}: {n}" for title, n in counts if n)
 
 
 def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict] = None,
-           reviewed: Optional[dict] = None) -> str:
+           reviewed: Optional[dict] = None, off=()) -> str:
     """One trend per method (whole, or one by one): runs measured differently do not compare. Every Odoo version on
     the same curve (a dashed line where it changes); when the runs span several versions, each one alone too, one
     choice away. `measures`: the labels of [[report.measures]]. `choice`: [report] trends (the charts shown: by default all, the
@@ -865,8 +882,9 @@ def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict]
     def section(name: str, lines: list[dict]) -> str:
         if name == 'security':
             title, unit = builtin[name]
-            return _trend_section(name, title, unit, name in unfolded, lines, events, lambda r: open_findings(r, reviewed),
-                                  custom=True, detail=lambda r: _findings_detail(r, reviewed))
+            return _trend_section(name, title, unit, name in unfolded, lines, events,
+                                  lambda r: open_findings(r, reviewed, off), custom=True,
+                                  detail=lambda r: _findings_detail(r, reviewed, off))
         if name in builtin:
             title, unit = builtin[name]
             return _trend_section(name, title, unit, name in unfolded, lines, events, lambda r: r.get(name))
@@ -914,10 +932,11 @@ def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Option
         f'<title>Codebase report</title><style>{CSS}</style><style id="graph-css">{GRAPH_CSS}</style></head><body><main>',
         f'<h1>Codebase report</h1><p class="meta">Generated {E(when)} · {how}</p>',
         _tiles(summary, old_summary, previous, series), _attention(state, meta.get('standard_tests')), _standard(meta.get('standard_tests')), _enterprise(enterprise), _changes(diff, old_date),
-        _security(state, meta.get('reviewed') or {}, meta.get('security_before')),
+        _security(state, meta.get('reviewed') or {}, meta.get('security_before'), meta.get('security_off') or []),
         _mutation(meta.get('mutation') or {}, meta.get('reviewed_changes') or {}),
         _table(state, enterprise, meta.get('reviewed'), meta.get('mutation')),
-        _graph(graphs), _trend(history, meta.get('measures') or [], meta.get('trends'), meta.get('reviewed')),
+        _graph(graphs), _trend(history, meta.get('measures') or [], meta.get('trends'), meta.get('reviewed'),
+                               meta.get('security_off') or []),
         '<footer>Files next to this report: <code>state.json</code> (last results, reused for unchanged addons), '
         '<code>history.jsonl</code> (one line per measured run), <code>coverage_odoo.log</code> (full Odoo log of the last measure).</footer>',
         '</main><script type="application/json" id="data">', json.dumps(data).replace("</", "<\\/"), '</script>',

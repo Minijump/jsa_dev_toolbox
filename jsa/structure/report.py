@@ -59,11 +59,12 @@ def status(entry: dict) -> str:
     return 'ok' if entry.get('tests') else 'no_tests'
 
 
-def security_ids(state: dict) -> Optional[set[str]]:
-    """The ids of the security findings of a state; None when it was made before jsa had the security review."""
+def security_ids(state: dict) -> Optional[dict[str, str]]:
+    """{id: rule} of the security findings of a state; None when it has no security review (made before jsa had it,
+    or every rule switched off)."""
     if not any('security' in e for e in state.values()):
         return None
-    return {f['id'] for e in state.values() for f in e.get('security') or []}
+    return {f['id']: f['rule'] for e in state.values() for f in e.get('security') or []}
 
 
 def summarize(state: dict) -> dict:
@@ -305,16 +306,19 @@ def load_standard_tests(out_dir: Path) -> Optional[dict]:
 def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Result]], out_dir: Path,
                   extra: Optional[dict] = None, run: Optional[dict] = None, standard: Optional[dict] = None,
                   measures: Optional[dict] = None, trends: Optional[dict] = None, reviewed: Optional[dict] = None,
-                  reviewed_changes: Optional[dict] = None):
+                  reviewed_changes: Optional[dict] = None, security_off: Optional[list] = None):
     """`run` describes a coverage run ({'mode', 'profile'}) when addons were measured now: it is added to the history.
     `standard`: the results of the standard modules' tests run now; else those of the last time they were run.
     `measures`: the counts of [[report.measures]] of config.toml ({label: count}), recorded with the run.
     `trends`: [report] trends / trends_open of config.toml, the charts shown and unfolded (none: the default).
     `reviewed`: the security findings found fine ({id: reason}, reviewed.toml). `reviewed_changes`: the same for the
-    changes of 'jsa mutation' that no test notices ([[mutation]]), whose results are read in out_dir/mutation/."""
-    reviewed = reviewed or {}
+    changes of 'jsa mutation' that no test notices ([[mutation]]), whose results are read in out_dir/mutation/.
+    `security_off`: the security rules switched off in config.toml ([security] skip)."""
+    reviewed, security_off = reviewed or {}, security_off or []
     out_dir.mkdir(parents=True, exist_ok=True)
     old, old_date = load_state(out_dir)
+    before = security_ids(old)  # a rule switched off since: its findings are not "gone"
+    before = None if before is None else {i: rule for i, rule in before.items() if rule not in security_off}
     standard_tests = load_standard_tests(out_dir)
     new = build_state(loc, dependencies, results, extra)
     now = datetime.now().isoformat(timespec='seconds')
@@ -337,8 +341,8 @@ def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Res
                               old_date, load_history(out_dir / HISTORY_FILE), graphs,
                               {'generated_at': now, **(run or {}), 'standard_tests': standard_tests,
                                'measures': list(measures or {}), 'trends': trends or {}, 'reviewed': reviewed,
-                               'security_before': security_ids(old), 'mutation': load_mutation(out_dir),
-                               'reviewed_changes': reviewed_changes or {}})
+                               'security_before': before, 'mutation': load_mutation(out_dir),
+                               'reviewed_changes': reviewed_changes or {}, 'security_off': security_off})
     (out_dir / REPORT_FILE).write_text(html, encoding='utf-8')
     (out_dir / STATE_FILE).write_text(json.dumps({'schema': SCHEMA, 'generated_at': now, 'addons': new,
                                                   'standard_tests': standard_tests}, indent=1), encoding='utf-8')
@@ -350,8 +354,10 @@ def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Res
                    + ("" if run else " (the trends record them with the runs that measure the coverage, -c)"))
     found = security_ids(new)
     if found is not None:
-        to_review, before = found - reviewed.keys(), security_ids(old)
-        fresh = len(to_review - before) if before is not None else 0
-        typer.echo(f"🔒 Security review: {len(to_review) or 'nothing'} to review" + (f", {fresh} new" if fresh else "")
-                   + (f" ({len(found) - len(to_review)} reviewed)" if len(found) > len(to_review) else ""))
+        to_review = found.keys() - reviewed.keys()
+        fresh = len(to_review - before.keys()) if before is not None else 0
+        gone = len(before.keys() - found.keys() - reviewed.keys()) if before is not None else 0
+        change = ", ".join(part for part in (f"+{fresh} new" if fresh else "", f"-{gone} gone" if gone else "") if part)
+        typer.echo(f"🔒 Security review: {len(to_review) or 'nothing'} to review" + (f" ({change})" if change else "")
+                   + (f", {len(found) - len(to_review)} reviewed" if len(found) > len(to_review) else ""))
     typer.echo(f"✅ Report: {out_dir / REPORT_FILE}")

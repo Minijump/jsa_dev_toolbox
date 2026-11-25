@@ -29,6 +29,10 @@ addons_roots = [
 #   pattern = '\bTODO\b'              # single quotes: a backslash stays a backslash
 #   files = ["*.py", "*.js", "*.xml"]
 
+# The rules of the security review switched off (their keys, given in the report; ["*"] = no review at all).
+#   [security]
+#   skip = ["csrf_off"]
+
 # Mutation testing of your critical addons ('jsa mutation -p <profile>'): the addons measured when none is given, and
 # the methods left out (name globs, "Class.method" or "method").
 #   [mutation]
