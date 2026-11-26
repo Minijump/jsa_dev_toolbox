@@ -48,9 +48,9 @@ GRAPH_CSS = """
 CSS = """
 :root{color-scheme:light;--page:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;
 --axis:#c3c2b7;--border:rgba(11,11,11,.10);--accent:#2a78d6;--good:#0ca30c;--serious:#ec835a;--critical:#d03b3b;
---hover:rgba(11,11,11,.04);--ent:#4a3aa7}
+--hover:rgba(11,11,11,.04);--ent:#4a3aa7;--line2:#b8641f}
 @media (prefers-color-scheme:dark){:root{color-scheme:dark;--page:#0d0d0d;--surface:#1a1a19;--ink:#fff;--ink2:#c3c2b7;
---grid:#2c2c2a;--axis:#383835;--border:rgba(255,255,255,.10);--accent:#3987e5;--hover:rgba(255,255,255,.05);--ent:#9085e9}}
+--grid:#2c2c2a;--axis:#383835;--border:rgba(255,255,255,.10);--accent:#3987e5;--hover:rgba(255,255,255,.05);--ent:#9085e9;--line2:#e8964f}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--page);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
 main{max-width:1280px;margin:0 auto;padding:24px 20px 60px}
@@ -86,7 +86,7 @@ tbody.addon.open>tr:first-child td{border-bottom:none}
 .meter{display:inline-block;width:110px;height:8px;border-radius:4px;background:var(--grid);vertical-align:middle;
 margin-right:8px;overflow:hidden}
 .meter span{display:block;height:100%;border-radius:4px}
-.cov{white-space:nowrap;font-variant-numeric:tabular-nums}
+.cov{white-space:nowrap;font-variant-numeric:tabular-nums}.whole{display:block;color:var(--muted);font-size:12px}
 .pos{color:var(--good)}.neg{color:var(--critical)}
 .depgraph{background:#fcfcfb;border:1px solid var(--border);border-radius:8px;overflow:auto;max-height:78vh;padding:8px}
 .depgraph svg{display:block;height:auto}
@@ -95,7 +95,6 @@ margin-right:8px;overflow:hidden}
 .legend .grad{display:inline-block;width:120px;height:12px;border-radius:3px;vertical-align:-2px;margin:0 5px;background:linear-gradient(90deg,hsl(0,55%,58%),hsl(60,55%,58%),hsl(120,55%,58%))}
 .legend .dot{background:#ec835a;color:#fff;font-weight:700;font-size:10px;line-height:14px;text-align:center;font-style:normal;border-color:#ec835a}
 .legend i{display:inline-block;width:14px;height:14px;border-radius:50%;vertical-align:-3px;margin-right:4px;border:1px solid #898781}
-.series[hidden]{display:none}
 details.trend{border-top:1px solid var(--grid)}details.trend:first-child{border-top:none}
 details.trend summary{display:grid;grid-template-columns:10px minmax(120px,290px) 80px 1fr;gap:14px;align-items:baseline;
 padding:9px 0;cursor:pointer;list-style:none}
@@ -111,8 +110,10 @@ details.trend summary:hover .tname{color:var(--accent)}
 .chart polyline{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round}
 .chart .dot{fill:var(--accent);stroke:var(--surface);stroke-width:2}.chart .hit{fill:transparent}
 .chart .hit:hover+.dot{r:6}
+.chart polyline.l1{stroke:var(--line2);stroke-dasharray:7 4}.chart .dot.l1{fill:var(--line2)}.chart .last.l1{fill:var(--line2)}
+.lines{display:flex;gap:16px;color:var(--ink2);font-size:12px;margin-right:auto}.lines i{display:inline-block;width:20px;border-top:2px solid var(--accent);vertical-align:4px;margin-right:6px}.lines i.l1{border-top:2px dashed var(--line2)}
 details.trend svg.full,details.trend.from0 svg.zoomed{display:none}details.trend.from0 svg.full{display:block}
-.axisbar{display:flex;justify-content:flex-end}button.axis{font-size:12px;padding:2px 8px}
+.axisbar{display:flex;justify-content:flex-end;align-items:center}button.axis{font-size:12px;padding:2px 8px}
 ul.findings{padding:0;margin:8px 0 0}
 .finding{list-style:none;margin:8px 0;padding:8px 12px;border:1px solid var(--grid);border-radius:8px}
 .finding[hidden]{display:none}
@@ -230,22 +231,11 @@ document.querySelectorAll('button.copy').forEach(btn => btn.addEventListener('cl
   };
   if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, byHand); else byHand();
 }));
-const series = document.getElementById('series');  // the trend of one way of measuring at a time
-if (series) {
-  const pick = () => document.querySelectorAll('.series').forEach(b => b.hidden = b.dataset.key !== series.value);
-  series.addEventListener('change', pick); pick();
-}
-// a chart zoomed on its values (at first) or from 0: the same in the trends of the other ways of measuring
+// a chart zoomed on its values (at first) or from 0
 document.querySelectorAll('details.trend button.axis').forEach(btn => btn.addEventListener('click', () => {
-  const section = btn.closest('details.trend'), from0 = !section.classList.contains('from0');
-  document.querySelectorAll(`details.trend[data-chart="${section.dataset.chart}"]`).forEach(d => {
-    d.classList.toggle('from0', from0);
-    d.querySelector('button.axis').textContent = from0 ? 'Zoom on the values' : 'Axis from 0';
-  });
+  const section = btn.closest('details.trend'), from0 = section.classList.toggle('from0');
+  btn.textContent = from0 ? 'Zoom on the values' : 'Axis from 0';
 }));
-// a chart folded or unfolded: the same in the trends of the other ways of measuring
-document.querySelectorAll('details.trend').forEach(d => d.addEventListener('toggle', () =>
-  document.querySelectorAll(`details.trend[data-chart="${d.dataset.chart}"]`).forEach(o => { if (o.open !== d.open) o.open = d.open; })));
 const graphs = () => [...document.querySelectorAll('.depgraph')];
 const std = document.getElementById('std'), dup = document.getElementById('dup');
 if (std) {
@@ -283,25 +273,40 @@ def _status_html(name: str) -> str:
     return f'<span class="st {css}"><b>{symbol}</b>{label}</span>'
 
 
+def _percent(measure: dict) -> Optional[str]:
+    """'72%' of a measure (per module, or whole), '0%' when its tests never ran (not installable, counted as 0% in the
+    total), None when there is no percentage."""
+    coverage = measure.get('coverage')
+    if coverage == NOT_INSTALLABLE:
+        return "0%" if measure.get('statements') else None
+    return f"{coverage}%" if isinstance(coverage, int) and coverage >= 0 else None
+
+
 def _coverage_html(entry: dict) -> str:
-    coverage = entry.get('coverage')
+    """The coverage per module (a meter), then the whole one."""
+    coverage, whole = entry.get('coverage'), _percent(entry.get('whole') or {})
+    whole = f'<span class="whole" title="With all the addons installed and tested together">whole {whole}</span>' if whole else ""
     if coverage == NOT_INSTALLABLE and entry.get('statements'):
-        return '<span class="muted" title="Its tests never ran: counted as 0% in the total">0%</span>'
+        return '<span class="muted" title="Its tests never ran: counted as 0% in the total">0%</span>' + whole
     if coverage is None or coverage == NOT_INSTALLABLE:
-        return '<span class="muted">–</span>'
+        return '<span class="muted">–</span>' + whole
     if coverage == NO_REPORT:
         return '<span class="muted">no python code</span>'
     return (f'<span class="cov"><span class="meter"><span style="width:{coverage}%;background:{coverage_color(coverage)}"></span>'
-            f'</span>{coverage}%</span>')
+            f'</span>{coverage}%</span>{whole}')
 
 
 def _tests_html(entry: dict) -> str:
     if report.status(entry) in ('not_measured', 'not_installable'):
         return '–'
     tests, failed = entry.get('tests') or 0, len(entry.get('failed') or [])
+    alone, together = entry.get('failed') or [], (entry.get('whole') or {}).get('failed')
+    # whole: said when it differs (a test failing only with all the addons, or passing only with them)
+    whole = (f'<span class="whole" title="With all the addons installed and tested together">whole: {len(together)} failed</span>'
+             if together is not None and sorted(together) != sorted(alone) else '')
     if not tests:
-        return 'no tests'
-    return f'{tests - failed} passed' + (f' · <span class="st serious"><b>⚠</b>{failed} failed</span>' if failed else '')
+        return 'no tests' + whole
+    return f'{tests - failed} passed' + (f' · <span class="st serious"><b>⚠</b>{failed} failed</span>' if failed else '') + whole
 
 
 def _tip(entry: dict) -> str:
@@ -309,7 +314,8 @@ def _tip(entry: dict) -> str:
     state = report.status(entry)
     parts = [STATUS[state][0].lower()]
     if isinstance(entry.get('coverage'), int) and entry['coverage'] >= 0:
-        parts.append(f"{entry['coverage']}% coverage")
+        whole = _percent(entry.get('whole') or {})
+        parts.append(f"{entry['coverage']}% coverage" + (f" (whole {whole})" if whole else ""))
     if state in ('ok', 'failing'):
         tests = entry.get('tests', 0)
         parts.append(f"{tests} test{'s' if tests != 1 else ''}" + (f", {len(entry['failed'])} failed" if entry.get('failed') else ""))
@@ -324,33 +330,42 @@ def _delta(new, old, unit: str = "", decimals: int = 0, compared: str = "the pre
     return f'<span title="Compared with {E(compared)}">{text}</span>'
 
 
-def _tiles(summary: dict, old: Optional[dict], previous: Optional[dict] = None, series: Optional[tuple] = None) -> str:
-    """`old`: the summary of the previous report, for what does not depend on how the tests were run (addons, lines
-    of code). `previous`: the previous run measured the same way as this one (`series`), for the measures: none when
-    this report did not measure anything, or when nothing was measured that way before.
-    Each tile: a label, the value, at most two short lines (the change since the last run, a short note)."""
-    old, previous = old or {}, previous or {}
-    compared = f"the previous run measured the same way: {report.series_label(series)}" if series else ""
-    measure = lambda key, unit="", decimals=0, short=False: _delta(summary[key], previous.get(key), unit, decimals, compared, short)
+def _tiles(summary: dict, old: Optional[dict], earlier: list[dict] = ()) -> str:
+    """`old`: the summary of the previous report, for what does not depend on the tests (addons, lines of code).
+    `earlier`: the runs before this one, for the measures (none when this report did not measure anything): each is
+    compared with the last run that has it (a run of jsa 0.36 or older measured per module or whole only).
+    Each tile: a label, the value (per module), at most two short lines (the change since the last run, the value
+    whole: all the addons installed and tested together)."""
+    old = old or {}
+    last = lambda key: next((r[key] for r in reversed(earlier) if r.get(key) is not None), None)
+    measure = lambda key, unit="", decimals=0, short=False: _delta(summary.get(key), last(key), unit, decimals,
+                                                                   "the previous run", short)
     report_delta = lambda key: _delta(summary[key], old.get(key))
     with_change = lambda text, change: text + (f" ({change})" if change else "")
+    whole = lambda key, text: (with_change(f"whole: {text.format(summary[key])}", measure(key, " pts" if "%" in text else "",
+                                                                                         1 if "%" in text else 0, True))
+                               if summary.get(key) is not None else "")
     coverage = f"{summary['coverage']:.0f}%" if summary['coverage'] is not None else "–"
     passed = summary['tests'] - summary['failed']
     enterprise = summary.get('enterprise')
     tiles = [
         ("Addons", f"{summary['addons']}", [report_delta('addons')]),
         ("Lines of code", f"{summary['loc']:,}", [report_delta('loc'), "excl. tests, po, migrations"]),
-        ("Coverage", coverage, [measure('coverage', " pts", 1), "branch coverage"]),
+        ("Coverage", coverage, [measure('coverage', " pts", 1), whole('coverage_whole', "{:.0f}%")],
+         "Branch coverage of the code inside functions, per module: each addon alone with its dependencies and its own "
+         "tests. Whole: all the addons installed and tested together"),
         ("Tests passed", f"{passed:,} / {summary['tests']:,}" if summary['tests'] else "–",
-         [with_change(f"{summary['failed']} failed", measure('failed', short=True))]),
-        ("Not installable", f"{summary['not_installable']}", [measure('not_installable')]),
+         [with_change(f"{summary['failed']} failed", measure('failed', short=True)), whole('failed_whole', "{} failed")],
+         "Per module; whole: the tests failing with all the addons installed together"),
+        ("Not installable", f"{summary['not_installable']}", [measure('not_installable'), whole('not_installable_whole', "{}")],
+         "Per module (alone with its dependencies); whole: with all the addons"),
         ("Enterprise dependencies", "–" if enterprise is None else f"{enterprise}",
          ["no enterprise folder in config.toml"] if enterprise is None else [report_delta('enterprise'), "addons using it directly"]),
     ]
     return '<div class="tiles">' + "".join(
-        f'<div class="tile"><div class="label">{label}</div><div class="value">{value}</div>'
-        + "".join(f'<div class="sub">{line}</div>' for line in lines if line) + '</div>'
-        for label, value, lines in tiles) + '</div>'
+        f'<div class="tile"{f" title={chr(34)}{E(tip[0])}{chr(34)}" if tip else ""}><div class="label">{label}</div>'
+        f'<div class="value">{value}</div>' + "".join(f'<div class="sub">{line}</div>' for line in lines if line) + '</div>'
+        for label, value, lines, *tip in tiles) + '</div>'
 
 
 def _attention(state: dict, standard: Optional[dict] = None) -> str:
@@ -360,9 +375,13 @@ def _attention(state: dict, standard: Optional[dict] = None) -> str:
             items.append(f'<li>{_status_html("not_installable")} <strong>{E(name)}</strong>: {E(entry.get("note") or "could not be installed")}</li>')
     for name, entry in state.items():
         if report.status(entry) == 'failing':
-            tests = ", ".join(f"<code>{E(t)}</code>" for t in entry.get('failed') or [])
-            together = E(entry['together']) if entry.get('together') and 'test(s) fail' not in entry['together'] else ""
-            items.append(f'<li>{_status_html("failing")} <strong>{E(name)}</strong>: {"; ".join(x for x in (tests, together) if x)}</li>')
+            whole, failed = entry.get('whole') or {}, entry.get('failed') or []
+            parts = [", ".join(f"<code>{E(t)}</code>" for t in failed)] if failed else []
+            if whole.get('coverage') == NOT_INSTALLABLE:
+                parts.append(f"cannot be installed with all the addons ({E(whole.get('note') or 'see the log')})")
+            elif only := [t for t in whole.get('failed') or [] if t not in failed]:
+                parts.append("with all the addons (whole): " + ", ".join(f"<code>{E(t)}</code>" for t in only))
+            items.append(f'<li>{_status_html("failing")} <strong>{E(name)}</strong>: {"; ".join(parts)}</li>')
     for module, result in sorted(((standard or {}).get('modules') or {}).items()):
         if result['failed']:
             tests = ", ".join(f"<code>{E(t)}</code>" for t in result['failed'])
@@ -438,8 +457,8 @@ def _changes(diff: Optional[dict], old_date: Optional[str]) -> str:
     body = f'<ul>{"".join(f"<li>{i}</li>" for i in items)}</ul>' if items else ""
     if diff.get('not_comparable'):
         count = len(diff['not_comparable'])
-        body += (f'<p class="meta">Coverage and tests of {count} addon{"s" if count > 1 else ""} not compared: measured another '
-                 'way than in the previous run (whole instead of one by one, or the reverse).</p>')
+        body += (f'<p class="meta">Coverage and tests of {count} addon{"s" if count > 1 else ""} not compared: measured by '
+                 'another version of jsa than in the previous run.</p>')
     body = body or '<span class="meta">Nothing changed.</span>'
     return f'<section><h2>Changes since the previous run{since}</h2>{body}</section>'
 
@@ -448,10 +467,16 @@ def _detail(name: str, entry: dict, state: dict, used_by: list[str], enterprise:
     parts = []
     if entry.get('note'):
         parts.append(f"<h3>Why it is not installable</h3>{E(entry['note'])}")
-    if entry.get('together'):
-        parts.append(f"<h3>With all the other addons installed</h3>{E(entry['together'])}")
     if entry.get('failed'):
         parts.append("<h3>Failed tests</h3><ul>" + "".join(f"<li><code>{E(t)}</code></li>" for t in entry['failed']) + "</ul>")
+    whole, failed = entry.get('whole') or {}, entry.get('failed') or []
+    if whole.get('coverage') == NOT_INSTALLABLE and entry.get('coverage') != NOT_INSTALLABLE:
+        parts.append(f"<h3>With all the addons (whole)</h3>Cannot be installed with them: {E(whole.get('note') or 'see the log')}")
+    elif only := [t for t in whole.get('failed') or [] if t not in failed]:
+        parts.append("<h3>Failing only with all the addons (whole)</h3><ul>"
+                     + "".join(f"<li><code>{E(t)}</code></li>" for t in only) + "</ul>")
+    if passing := [t for t in failed if 'failed' in whole and t not in whole['failed']]:
+        parts.append("<h3>Passing with all the addons (whole)</h3>" + ", ".join(f"<code>{E(t)}</code>" for t in passing))
     if entry.get('files'):
         parts.append("<h3>Lines not covered by tests</h3><ul>" + "".join(
             f"<li><code>{E(f)}</code>: {E(lines)}</li>" for f, lines in sorted(entry['files'].items())) + "</ul>")
@@ -706,16 +731,22 @@ def zoomed_axis(values: list[float], whole: bool = False) -> tuple[float, float,
     return low, (high if high > low else low + step), step
 
 
+LINES = ("per module", "whole")  # the two lines of a chart measured both ways
+
+
 def line_chart(title: str, points: list[tuple], unit: str = "", y_max: Optional[float] = None,
-               zoom: bool = False, events: list[tuple[float, str]] = (), css: str = "") -> str:
-    """Line chart of one measure over the runs (the section around it names it). points: (label, value[, tooltip]).
+               zoom: bool = False, events: list[tuple[float, str]] = (), css: str = "", names: tuple = ()) -> str:
+    """Line chart of a measure over the runs (the section around it names it). points: (label, value[, tooltip]).
+    With `names`, several lines: the value of a point is then a tuple, one value per line (None: that run did not
+    measure it, the line goes straight to its next point); the second line is dashed (the legend is the section's).
     Each point has a tooltip (its label unless given), the first and last labels are on the x axis, the last
-    value is labeled. zoom: the axis covers the values instead of starting at 0 (+2% on 80,000 lines of code would
-    look flat). events: (position on the x axis, counted in runs; what happened), drawn as dashed vertical lines.
-    As wide as the page's sections (1200 = their width on a large screen: the text keeps its size there).
+    value of each line is labeled. zoom: the axis covers the values instead of starting at 0 (+2% on 80,000 lines of
+    code would look flat). events: (position on the x axis, counted in runs; what happened), drawn as dashed vertical
+    lines. As wide as the page's sections (1200 = their width on a large screen: the text keeps its size there).
     css: more classes of the <svg>."""
     width, height, left, right, top, bottom = 1200, 200, 48, 72, 26, 24
-    values = [p[1] for p in points]
+    lines = [[p[1][n] for p in points] for n in range(len(names))] if names else [[p[1] for p in points]]
+    values = [v for line in lines for v in line if v is not None]
     if zoom:
         low, high, step = zoomed_axis(values, whole=not unit)  # no unit: a count
         ticks = [low + i * step for i in range(round((high - low) / step) + 1)]
@@ -737,31 +768,46 @@ def line_chart(title: str, points: list[tuple], unit: str = "", y_max: Optional[
             out.append(f'<g class="event"><title>{E(text)}</title><line x1="{at:.1f}" x2="{at:.1f}" y1="{top - 6}" '
                        f'y2="{height - bottom}"/><text x="{at + (-5 if near_end else 5):.1f}" y="{top - 9}" '
                        f'text-anchor="{"end" if near_end else "start"}">{E(short)}</text></g>')
-    out.append('<polyline points="' + " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(values)) + '"/>')
-    for i, (label, value, *tooltip) in enumerate(points):
-        tip = f"<title>{E(tooltip[0] if tooltip else label)}: {number(value)}{unit}</title>"
-        out.append(f'<circle class="hit" cx="{x(i):.1f}" cy="{y(value):.1f}" r="12">{tip}</circle>'
-                   f'<circle class="dot" cx="{x(i):.1f}" cy="{y(value):.1f}" r="4">{tip}</circle>')
-    last_label, last_value = points[-1][:2]
-    out.append(f'<text class="last" x="{x(len(points) - 1) + 9:.1f}" y="{y(last_value) + 4:.1f}">{number(last_value)}{unit}</text>')
+    lasts = []  # (line, x, y, text) of the last value of each line
+    for n, line in enumerate(lines):
+        drawn = [(i, v) for i, v in enumerate(line) if v is not None]
+        if drawn:
+            out.append(f'<polyline{f" class={chr(34)}l{n}{chr(34)}" if n else ""} points="'
+                       + " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in drawn) + '"/>')
+            lasts.append([n, x(drawn[-1][0]) + 9, y(drawn[-1][1]) + 4, f"{number(drawn[-1][1])}{unit}"])
+    for i, (label, _, *tooltip) in enumerate(points):
+        shown = [(names[n] + " " if names else "", line[i]) for n, line in enumerate(lines) if line[i] is not None]
+        tip = (f"<title>{E(tooltip[0] if tooltip else label)}: "
+               + ", ".join(f"{E(name)}{number(v)}{unit}" for name, v in shown) + "</title>")
+        for n, line in enumerate(lines):
+            if line[i] is not None:
+                out.append(f'<circle class="hit" cx="{x(i):.1f}" cy="{y(line[i]):.1f}" r="12">{tip}</circle>'
+                           f'<circle class="dot{f" l{n}" if n else ""}" cx="{x(i):.1f}" cy="{y(line[i]):.1f}" r="4">{tip}</circle>')
+    if len(lasts) == 2 and abs(lasts[0][2] - lasts[1][2]) < 13:  # labels apart
+        middle = (lasts[0][2] + lasts[1][2]) / 2
+        upper, lower = sorted(lasts, key=lambda last: last[2])
+        upper[2], lower[2] = middle - 7, middle + 7
+    for n, at_x, at_y, text in lasts:
+        out.append(f'<text class="last{f" l{n}" if n else ""}" x="{at_x:.1f}" y="{at_y:.1f}">{text}</text>')
     out.append(f'<text x="{left}" y="{height - 6}">{E(points[0][0])}</text>')
     if len(points) > 1:
-        out.append(f'<text x="{width - right}" y="{height - 6}" text-anchor="end">{E(last_label)}</text>')
+        out.append(f'<text x="{width - right}" y="{height - 6}" text-anchor="end">{E(points[-1][0])}</text>')
     return "".join(out) + '</svg>'
 
 
-# the charts of the trend, in their default order: (key in the history = name in config.toml, title, unit). Each one
-# is zoomed on its values at first (80% -> 82% must show), its axis from 0 one click away (the user, 2026-11-24)
+# the charts of the trend, in their default order: (key in the history = name in config.toml, title, unit, measured
+# both ways: a second line, whole, from '<key>_whole'). Each one is zoomed on its values at first (80% -> 82% must
+# show), its axis from 0 one click away (the user, 2026-11-24)
 TREND_CHARTS = (
-    ('coverage', "Coverage", "%"),
-    ('loc', "Lines of code", ""),
-    ('tests', "Tests", ""),
-    ('failed', "Failed tests", ""),
-    ('security', "Security findings to review", ""),
-    ('not_installable', "Not installable addons", ""),
-    ('no_tests', "Addons without tests", ""),
-    ('addons', "Addons", ""),
-    ('enterprise', "Enterprise dependencies", ""),
+    ('coverage', "Coverage", "%", True),
+    ('loc', "Lines of code", "", False),
+    ('tests', "Tests", "", False),
+    ('failed', "Failed tests", "", True),
+    ('security', "Security findings to review", "", False),
+    ('not_installable', "Not installable addons", "", True),
+    ('no_tests', "Addons without tests", "", False),
+    ('addons', "Addons", "", False),
+    ('enterprise', "Enterprise dependencies", "", False),
 )
 TRENDS_OPEN = ('coverage', 'loc')  # unfolded at first, unless [report] trends_open of config.toml says otherwise
 
@@ -786,18 +832,26 @@ def event_positions(dates: list, events: list[dict]) -> list[tuple[float, str]]:
 
 
 def _trend_section(key: str, title: str, unit: str, is_open: bool, runs: list[dict], events: list[dict],
-                   value_of, custom: bool = False, detail=None) -> str:
+                   value_of, custom: bool = False, detail=None, names: tuple = ()) -> str:
     """One chart in its foldable section, titled with its last value. The runs are in the order of their code_date.
     Drawn twice: zoomed on its values (shown) and from 0 (class 'full'), a button swaps them (class 'from0' on the
     section, see JS). custom: a chart said to come later when no run recorded it yet (a measure of config.toml, the
-    security review; the other charts are left out). detail: more about a run for the tooltip of its point."""
-    points = [(r, value_of(r)) for r in runs if value_of(r) is not None]
+    security review; the other charts are left out). detail: more about a run for the tooltip of its point.
+    names: the lines of a chart measured both ways (LINES): value_of gives a tuple, one value per line."""
+    has = (lambda v: any(x is not None for x in v)) if names else (lambda v: v is not None)
+    points = [(r, value_of(r)) for r in runs if has(value_of(r))]
     head = f'<details class="trend" data-chart="{key}"{" open" if is_open else ""}><summary><span class="tname">{E(title)}</span>'
     if not points:
         return (head + '<span class="tnow">–</span><span class="tnote">recorded from the next run measuring the coverage (-c)</span>'
                        '</summary></details>') if custom else ""
     label = lambda r: str(r.get('code_date') or r.get('date', ''))[:16].replace('T', ' ')
-    head += f'<span class="tnow">{number(points[-1][1])}{unit}</span>'
+    if names:  # the last value of each line: per module in the title, whole next to it
+        last = [next((v[n] for _, v in reversed(points) if v[n] is not None), None) for n in range(len(names))]
+        head += (f'<span class="tnow">{"–" if last[0] is None else f"{number(last[0])}{unit}"}</span>'
+                 + "".join(f'<span class="tnote">{E(name)} {number(v)}{unit}</span>'
+                           for name, v in zip(names[1:], last[1:]) if v is not None))
+    else:
+        head += f'<span class="tnow">{number(points[-1][1])}{unit}</span>'
     if len(points) == 1:
         return head + f'<span class="tnote">one run so far ({E(label(points[0][0]))})</span></summary></details>'
     # the tooltip gives the Odoo version, and both dates for a run measured after its code was written (an old commit)
@@ -807,9 +861,11 @@ def _trend_section(key: str, title: str, unit: str, is_open: bool, runs: list[di
     dates = [code_date(r) for r, _ in points]
     marks = event_positions(dates, events + version_changes([r for r, _ in points])) if all(dates) else []
     chart = lambda zoom: line_chart(title, [(label(r), v, tip(r)) for r, v in points], unit, 100 if unit == "%" else None,
-                                    zoom, marks, "zoomed" if zoom else "full")
-    return (head + '</summary><div class="axisbar"><button type="button" class="axis" title="The axis of this chart starts '
-            'at 0, or covers only its values">Axis from 0</button></div>' + chart(True) + chart(False) + '</details>')
+                                    zoom, marks, "zoomed" if zoom else "full", names)
+    legend = ('<span class="lines">' + "".join(f'<span><i{f" class={chr(34)}l{n}{chr(34)}" if n else ""}></i>{E(name)}</span>'
+                                               for n, name in enumerate(names)) + '</span>') if names else ""
+    return (head + f'</summary><div class="axisbar">{legend}<button type="button" class="axis" title="The axis of this chart '
+            'starts at 0, or covers only its values">Axis from 0</button></div>' + chart(True) + chart(False) + '</details>')
 
 
 def version_changes(runs: list[dict]) -> list[dict]:
@@ -840,9 +896,9 @@ def _findings_detail(run: dict, reviewed: dict, off=()) -> str:
 
 def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict] = None,
            reviewed: Optional[dict] = None, off=()) -> str:
-    """One trend per method (whole, or one by one): runs measured differently do not compare. Every Odoo version on
-    the same curve (a dashed line where it changes); when the runs span several versions, each one alone too, one
-    choice away. `measures`: the labels of [[report.measures]]. `choice`: [report] trends (the charts shown: by default all, the
+    """The trend of the measured runs: every run on the same charts, whatever its Odoo version (a dashed line where
+    it changes); coverage, failed tests and not installable addons have two lines, per module and whole.
+    `measures`: the labels of [[report.measures]]. `choice`: [report] trends (the charts shown: by default all, the
     measures last) and trends_open (unfolded at first: by default coverage and lines of code). The unfolded charts
     come first in the order of trends_open, then the others in the order of trends. `reviewed`: the security findings
     found fine (reviewed.toml): the security chart counts the others, in every run."""
@@ -852,59 +908,39 @@ def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict]
     unfolded = set(opened)
     # the unfolded charts first, in the order of trends_open, then the folded ones in the order of trends
     shown_charts = opened + [name for name in listed if name not in unfolded]
-    if not shown_charts:
-        return ""
     runs, events = report.runs_and_events(history)
-    measured = [r for r in runs if r.get('coverage') is not None]
-    series = {}  # (method, None: every Odoo version | one version): its runs
-    for run in measured:
-        series.setdefault((report.series_of(run), None), []).append(run)
-    for method, _ in list(series):
-        versions = sorted({r.get('odoo') for r in series[(method, None)] if r.get('odoo')})
-        if len(versions) > 1:
-            for version in versions:
-                series[(method, version)] = [r for r in series[(method, None)] if r.get('odoo') == version]
-    for lines in series.values():  # in the order of their code, whatever the order they were measured in
-        lines.sort(key=lambda r: code_date(r) or datetime.min)
-    drawn = {key: lines[-30:] for key, lines in series.items() if len(lines) >= 2}
-    if not drawn:
+    runs.sort(key=lambda r: code_date(r) or datetime.min)  # in the order of their code, whatever the order measured
+    runs = runs[-30:]
+    if not shown_charts or len(runs) < 2:
         return ""
-    latest = (report.series_of(measured[-1]), None)
-    shown = latest if latest in drawn else max((key for key in drawn if key[1] is None), default=next(iter(drawn)),
-                                               key=lambda key: measured.index(drawn[key][-1]))
-    keys = sorted(drawn, key=lambda key: (key != shown, key[0], key[1] or 0))
-    label = lambda key: report.series_label(*key)
-    select = ('<div class="controls"><select id="series" aria-label="Which runs">' + "".join(
-        f'<option value="{i}">{E(label(key))} ({len(series[key])} runs)</option>' for i, key in enumerate(keys))
-        + '</select></div>') if len(keys) > 1 else f'<p class="meta">{E(label(shown))}</p>'
-    builtin = {key: (title, unit) for key, title, unit in TREND_CHARTS}
+    builtin = {key: (title, unit, both) for key, title, unit, both in TREND_CHARTS}
 
-    def section(name: str, lines: list[dict]) -> str:
+    def section(name: str) -> str:
         if name == 'security':
-            title, unit = builtin[name]
-            return _trend_section(name, title, unit, name in unfolded, lines, events,
+            title, unit, _ = builtin[name]
+            return _trend_section(name, title, unit, name in unfolded, runs, events,
                                   lambda r: open_findings(r, reviewed, off), custom=True,
                                   detail=lambda r: _findings_detail(r, reviewed, off))
         if name in builtin:
-            title, unit = builtin[name]
-            return _trend_section(name, title, unit, name in unfolded, lines, events, lambda r: r.get(name))
+            title, unit, both = builtin[name]
+            if both:
+                return _trend_section(name, title, unit, name in unfolded, runs, events,
+                                      lambda r: (r.get(name), r.get(f"{name}_whole")), names=LINES)
+            return _trend_section(name, title, unit, name in unfolded, runs, events, lambda r: r.get(name))
         if name in measures:  # data-chart: an id, the label may hold any character
-            return _trend_section(f"m{list(measures).index(name)}", name, "", name in unfolded, lines, events,
+            return _trend_section(f"m{list(measures).index(name)}", name, "", name in unfolded, runs, events,
                                   lambda r: (r.get('measures') or {}).get(name), custom=True)
         return ""  # a measure removed from config.toml
 
-    sections = lambda lines: "".join(section(name, lines) for name in shown_charts)
-    blocks = "".join(f'<div class="series" data-key="{i}"{"" if key == shown else " hidden"}>{sections(drawn[key])}</div>'
-                     for i, key in enumerate(keys))
-    return ('<section id="trends"><h2>Trend of the measured runs</h2>' + select + blocks
-            + '<p class="meta" style="margin:8px 0 0">One point per run that measured the coverage, with the runs measured the '
-            'same way only (whole, or one by one), every Odoo version together (a dashed line where it changes), at the date '
-            'of the code measured: its last commit '
-            '(the date of the run when it had uncommitted changes), so measuring old commits fills the past. '
+    return ('<section id="trends"><h2>Trend of the measured runs</h2>' + "".join(section(name) for name in shown_charts)
+            + '<p class="meta" style="margin:8px 0 0">One point per run that measured the coverage, every Odoo version '
+            'together (a dashed line where it changes), at the date of the code measured: its last commit (the date of the '
+            'run when it had uncommitted changes), so measuring old commits fills the past. Two lines for what is measured '
+            'both ways: <strong>per module</strong> (each addon alone with its dependencies, its own tests) and '
+            '<strong>whole</strong> (all the addons installed and tested together, like production). '
             'Click a title to fold or unfold its chart. Each chart is zoomed on its values: "Axis from 0" draws it from '
-            '0. To forget a '
-            'run, delete its line in <code>history.jsonl</code>; to mark an event (a release, someone joining the team), add '
-            'a line there: <code>{"date": "2026-11-01", "event": "Release 2.0"}</code>.</p></section>')
+            '0. To forget a run, delete its line in <code>history.jsonl</code>; to mark an event (a release, someone '
+            'joining the team), add a line there: <code>{"date": "2026-11-01", "event": "Release 2.0"}</code>.</p></section>')
 
 
 def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Optional[dict], old_date: Optional[str],
@@ -916,13 +952,11 @@ def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Option
             'enterprise': sorted({module for e in state.values() for module in e.get('enterprise') or []}),
             'duplicates': graphs.get('duplicates', [])}
     when = meta['generated_at'][:16].replace('T', ' ')
-    # measured now: the measures are compared with the previous run measured the same way (the last line of the
-    # history is this run)
-    series = report.series_of(meta) if meta.get('mode') else None
+    # measured now: the measures are compared with the runs before (the last run of the history is this one)
     runs = report.runs_and_events(history)[0]
-    previous = next((r for r in reversed(runs[:-1]) if report.series_of(r) == series), None) if series else None
-    if meta.get('mode'):
-        how = f"coverage measured in mode <strong>{E(meta['mode'])}</strong> with profile <strong>{E(str(meta['profile']))}</strong>"
+    earlier = runs[:-1] if meta.get('measured') else []
+    if meta.get('measured'):
+        how = (f"coverage measured per module and whole with profile <strong>{E(str(meta['profile']))}</strong>")
     elif summary['measured']:
         how = "coverage not measured in this run: results of the last measure shown for the unchanged addons"
     else:
@@ -931,7 +965,7 @@ def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Option
         '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
         f'<title>Codebase report</title><style>{CSS}</style><style id="graph-css">{GRAPH_CSS}</style></head><body><main>',
         f'<h1>Codebase report</h1><p class="meta">Generated {E(when)} · {how}</p>',
-        _tiles(summary, old_summary, previous, series), _attention(state, meta.get('standard_tests')), _standard(meta.get('standard_tests')), _enterprise(enterprise), _changes(diff, old_date),
+        _tiles(summary, old_summary, earlier), _attention(state, meta.get('standard_tests')), _standard(meta.get('standard_tests')), _enterprise(enterprise), _changes(diff, old_date),
         _security(state, meta.get('reviewed') or {}, meta.get('security_before'), meta.get('security_off') or []),
         _mutation(meta.get('mutation') or {}, meta.get('reviewed_changes') or {}),
         _table(state, enterprise, meta.get('reviewed'), meta.get('mutation')),

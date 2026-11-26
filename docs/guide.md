@@ -147,14 +147,13 @@ then the other applications and modules. Useful before moving a database to the 
 
 - **Tiles**: addons, lines of code (without tests, translations and migrations), coverage (branch coverage: each
   line, and each direction of each `if`, of the code inside functions run by the tests: see below), tests, addons
-  that cannot be installed, dependencies on Odoo enterprise;
-  with their change since the
-  last run (its tooltip says which run: the measures compare with the last run measured the same way).
+  that cannot be installed, dependencies on Odoo enterprise; the measures per module, with the whole one under them
+  (see "Measuring the coverage"), and their change since the last run.
 - **Needs attention**, **changes since the previous run**, the **dependencies on Odoo enterprise** (direct, and through
   another custom addon).
 - **Security review**: the places of your code to look at, below.
-- **A table of the addons**, sortable and filterable; a click opens the failed tests, the lines not covered, the
-  dependencies and who uses the addon. A column counts its security findings to review; once `jsa mutation` measured
+- **A table of the addons**, sortable and filterable (its coverage per module, then whole); a click opens the
+  failed tests (alone and with all the addons), the lines not covered, the dependencies and who uses the addon. A column counts its security findings to review; once `jsa mutation` measured
   it, another gives its mutation score (below).
 
 ![Table of the addons](images/report_table.png)
@@ -167,28 +166,30 @@ then the other applications and modules. Useful before moving a database to the 
 
 - **Trends**, run after run, one chart under the other: coverage and lines of code open, the others folded (tests,
   failed tests, security findings to review, addons not installable, addons without tests, addons, enterprise
-  dependencies, your own measures), each titled with its last value. Each chart is zoomed on its values (coverage
-  going from 80% to 82% shows); its button "Axis from 0" draws it from 0 instead (in the trends of the other way of
-  measuring too). Each run is placed at the date of the code it measured: the last commit of your addons folders
-  (or the date of the run when they had uncommitted changes). So you can fill the past: `jsa backfill` (below).
+  dependencies, your own measures), each titled with its last value. Coverage, failed tests and addons not
+  installable have two lines: per module, and whole (dashed). Each chart is zoomed on its values (coverage going from
+  80% to 82% shows); its button "Axis from 0" draws it from 0 instead. Each run is placed at the date of the code it
+  measured: the last commit of your addons folders (or the date of the run when they had uncommitted changes). So
+  you can fill the past: `jsa backfill` (below).
 
 **Filling the past.** List old commits of your addons in `plugins/backfill/backfill.toml` (copy
 `backfill.toml.sample`), with your events, then run `jsa backfill` (`--dry-run` first: it shows each commit with its
 Odoo version and profile). For each commit, in a temporary checkout (yours is not touched): the Odoo version is read
 in the manifests (`17.0.1.0.0`: Odoo 17), the profile running that version is used (or the one given in `[profiles]`
-of the file), and the addons are measured like `jsa structure -c -m whole`, then `-m isolated` (`modes` of the file
-to keep one). One difference with `jsa structure`: in `whole`, an addon that does not install (or needs a module
-found in no addons path) makes all the addons count as not installable, as in production: coverage 0%, no test, a
-single install per commit (the broken addon's note says why, the others say "not tested"). A test that gets stuck is
-still skipped and counted failed, the others run. The runs go in the trends at the date of the commit; the reports of each commit stay in
-`codebase_analysis/backfill/<commit>/<mode>/`. A measure already taken is skipped, so a backfill that stopped goes on
-where it was, and a commit added to the file (anywhere: the charts follow the dates) is the only one measured.
-`backfill.toml` decides what the backfill part of the history holds: a commit, a mode or an event removed from it
+of the file), and the addons are measured like `jsa structure -c`: per module, then whole. One difference with
+`jsa structure`: in the whole run, an addon that does not install (or needs a module found in no addons path) makes
+all the addons count as not installable together, as in production: whole coverage 0%, a single install per commit
+(the broken addon's note says why, the others say "not tested"); the measures per module stay. A test that gets stuck
+is still skipped and counted failed, the others run. The runs go in the trends at the date of the commit; the reports
+of each commit stay in `codebase_analysis/backfill/<commit>/`. A commit already in the history is skipped (also one
+measured by jsa 0.36 or older, in the modes whole and isolated: its lines stay as they are), so a backfill that
+stopped goes on where it was, and a commit added to the file (anywhere: the charts follow the dates) is the only one
+measured. `backfill.toml` decides what the backfill part of the history holds: a commit or an event removed from it
 leaves the history (`--dry-run` says how many lines); the runs of `jsa structure -c` and the events added by hand
 stay. A measure added to `config.toml` (`[[report.measures]]`) is counted on the commits already measured, in seconds:
-their code only, no install, no test. Each commit is two full measures: count hours for many commits. Needs all the `addons_roots` in one
+their code only, no install, no test. Each commit is a full measure: count hours for many commits. Needs all the `addons_roots` in one
 git repository. In a terminal, a block stays at the bottom while the messages scroll above it: which measure of how
-many (which commit, mode, time elapsed and left), what Odoo does (the addon, its tests so far) and the test that
+many (which commit, time elapsed and left), what Odoo does (the addon, its tests so far) and the test that
 runs, with how long it has been running.
 
 **Which charts.** By default every chart is shown (your measures last), coverage and lines of code unfolded. To
@@ -260,17 +261,18 @@ measured, in seconds.
 line on every chart, once runs were measured before and after it.
 
 **Measuring the coverage.** `jsa structure -c -p <profile>` installs the addons in temporary databases (dropped
-afterwards), runs their tests under `coverage`, and puts the results in the report. Three ways:
+afterwards), runs their tests under `coverage`, and puts the results in the report. Two measures, both every time:
 
-| Mode | What it does | Catches |
+| Measure | What it does | Catches |
 |---|---|---|
-| `-m whole` (default) | all addons installed and tested together, in one database | what fails in production conditions; fastest |
-| `-m isolated` | each addon on a database holding only its dependencies (built from snapshots of the dependencies already installed) | undeclared dependencies |
-| `-m both` | the coverage of `isolated`, then all addons tested together without coverage | both; a test failing only with all the addons is marked "(with all the addons)" |
+| per module | each addon on a database holding only its dependencies (built from snapshots of the dependencies already installed), with its own tests | undeclared dependencies; whether an addon tests itself |
+| whole | then all addons installed and tested together, in one database | what fails in production conditions; the tests of an addon also run the code of those it depends on, a test overridden in another addon counts |
+
+The report shows both: the value per module first, then the whole one (tiles, table, charts of two lines).
 
 - An addon that fails to install is left out with the addons depending on it, and the others are tried again. One
-  needing a module found in no addons path is left out before the install. (`jsa backfill` stops there instead: all
-  or nothing.)
+  needing a module found in no addons path is left out before the install. (In its whole run, `jsa backfill` stops
+  there instead: all or nothing.)
 - A test, or the `setUpClass` of a test class, taking more than 10 minutes (`test_timeout` of `[codebase]` in
   `config.toml`) is stopped and fails; a class whose `setUpClass` fails runs none of its tests, and each of them is
   marked failed. A test catching every error cannot keep running. The database gives up a lock waited for longer
@@ -283,8 +285,8 @@ afterwards), runs their tests under `coverage`, and puts the results in the repo
 - An addon that does not install (or is marked not installable) counts as 0% covered in the total: its tests never
   ran. Its lines and branches are counted as coverage would have measured them, so the coverage goes up when it
   becomes installable, never down.
-- `--standard-tests` (whole, both): also runs the tests of the standard modules your addons need, with your addons
-  installed, like odoo.sh does. Long (`base` alone has about 1000 tests).
+- `--standard-tests`: also runs the tests of the standard modules your addons need, with your addons installed (in
+  the whole run), like odoo.sh does. Long (`base` alone has about 1000 tests).
 - Demo data is always installed: tests written for a database with demo data keep passing on Odoo 19.
 - What counts: **the code inside functions, run by the tests**. Imports, field definitions, class and `def` lines,
   decorators run when Odoo imports the module, tested or not: they are left out (they made an addon without tests
@@ -294,19 +296,20 @@ afterwards), runs their tests under `coverage`, and puts the results in the repo
   7.6 or later in the Python of the profile (`jsa doctor` says it; `<python> -m pip install -U coverage`).
 - Not measured: tests, manifests, `__init__.py`, hooks and migration scripts, which only run when a module is
   installed, upgraded or uninstalled.
-- Only what changed is measured again: in `isolated` and `both`, an addon keeps its last result while its code, its
-  custom dependencies, the Odoo commit and the mode are the same. In `whole`, any change runs everything. `--all`
-  measures everything.
+- Only what changed is measured again: per module, an addon keeps its last result while its code, its custom
+  dependencies and the Odoo commit are the same; the whole run is made again when anything changed (the addons
+  interact). `--all` measures everything.
 - Without `-c`, the report keeps the last measures of the unchanged addons.
 
 **Files** next to the report: `state.json` (the last results, also the cache), `history.jsonl` (one line per measured
 run, for the trends: delete a line to forget a run; your events), `coverage_odoo.log` (the full Odoo log of the last
 measure).
-Runs are only compared with runs measured the same way: whole, or one by one (isolated and both), picked above the
-charts. Every Odoo version is on the same curve, so the coverage on Odoo 17 and on 19 compare; a dashed line marks
-where the version changes, and when there are several, each version alone is one choice away. The runs made before
-jsa 0.31 counted the coverage another way (every line of the files, installing included, so higher): to keep the
-trend comparable, delete `codebase_analysis/history.jsonl` (and run `jsa backfill` again if you use it).
+Every run is on the same charts, every Odoo version on the same curve, so the coverage on Odoo 17 and on 19
+compare; a dashed line marks where the version changes. The runs of jsa 0.36 and older measured one way (a mode):
+they stay in the history as they are, a run in mode whole on the whole line, isolated or both on the per module line,
+and the two runs of one commit measured by `jsa backfill` make one point. The runs made before jsa 0.31 counted the
+coverage another way (every line of the files, installing included, so higher): to keep the trend comparable, delete
+`codebase_analysis/history.jsonl` (and run `jsa backfill` again if you use it).
 
 **Mutation testing: what the tests run without checking it.** Coverage says which code the tests run, not whether they
 check what it does. `jsa mutation <addon>... -p <profile>` changes the code of an addon one small change at a time (a

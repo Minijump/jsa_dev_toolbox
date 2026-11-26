@@ -352,22 +352,6 @@ def test_whole_with_the_tests_of_the_standard_modules():
     assert results["c_mail"].failed == ["TestMine.test_x"] and results["c_base"].tests == 2
 
 
-def test_both_keeps_the_measures_alone_and_adds_what_breaks_together():
-    alone = {"a": coverage.Result(80, tests=3, failed=["T.test_alone"]), "b": coverage.Result(60, tests=1),
-             "c": coverage.Result(NOT_INSTALLABLE, note="install failed"), "d": coverage.Result(50, tests=2)}
-    together = {"a": coverage.Result(NO_REPORT, tests=3, failed=["T.test_alone", "T.test_with_others"]),
-                "b": coverage.Result(NOT_INSTALLABLE, note="depends on x"), "d": coverage.Result(NO_REPORT, tests=2)}
-    merged = coverage.merge_together(alone, together)
-    assert merged["a"].coverage == 80 and merged["a"].failed == ["T.test_alone", "T.test_with_others (with all the addons)"]
-    assert merged["a"].together == "1 test(s) fail only when all the addons are installed"
-    assert merged["b"].coverage == 60 and merged["b"].together == "cannot be installed with all the other addons (depends on x)"
-    assert merged["c"].coverage == NOT_INSTALLABLE and not merged["c"].together  # already reported alone
-    assert merged["d"] == alone["d"]  # nothing breaks: the measure alone, as it was
-    # a kept result is merged again with the next run together: what came from the previous one goes away first
-    again = coverage.merge_together(merged, {"a": coverage.Result(NO_REPORT, tests=3, failed=["T.test_alone"])})
-    assert again["a"].failed == ["T.test_alone"] and not again["a"].together
-
-
 def test_hooks_and_migrations_are_not_measured(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr(coverage.odoo, "install", lambda *args, **kwargs: seen.update(kwargs) or LogInfo())

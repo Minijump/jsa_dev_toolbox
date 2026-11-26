@@ -6,6 +6,8 @@ Files written in the analysis folder:
 - state.json    last state of each addon; also the cache of the coverage measures
 - history.jsonl one line per measured run, for the trend charts (delete a line to forget a run). Lines added by
                 hand as {"date": "2026-11-01", "event": "Release 2.0"} are events: a vertical line on the charts.
+                The lines written before jsa measured each run both ways (0.37) are read as they are, see
+                runs_and_events.
 """
 import json
 import math
@@ -30,7 +32,8 @@ SCHEMA = 2  # version of the measures stored in the state: older ones are measur
 # ---------- state ----------
 
 def build_state(loc: dict, dependencies: dict, results: dict[str, Optional[Result]], extra: Optional[dict] = None) -> dict:
-    """{addon: {loc, depends, coverage (None: not measured), tests, failed, ..., + extra (fingerprint, mode, ...)}}"""
+    """{addon: {loc, depends, coverage (None: not measured), tests, failed, ... (per module), + extra (fingerprint,
+    whole: the same measures with all the addons together, ...)}}"""
     state = {}
     for name in sorted(loc):
         result = results.get(name)
@@ -49,12 +52,14 @@ def load_state(out_dir: Path) -> tuple[dict, Optional[str]]:
 
 
 def status(entry: dict) -> str:
-    coverage = entry.get('coverage')
+    """Of the measure per module; an addon whose tests fail with all the addons (whole), or that cannot be installed
+    with them, is failing."""
+    coverage, whole = entry.get('coverage'), entry.get('whole') or {}
     if coverage is None:
         return 'not_measured'
     if coverage == NOT_INSTALLABLE:
         return 'not_installable'
-    if entry.get('failed') or entry.get('together'):
+    if entry.get('failed') or whole.get('failed') or whole.get('coverage') == NOT_INSTALLABLE:
         return 'failing'
     return 'ok' if entry.get('tests') else 'no_tests'
 
@@ -69,12 +74,16 @@ def security_ids(state: dict) -> Optional[dict[str, str]]:
 
 def summarize(state: dict) -> dict:
     """Totals of a state. The coverage is weighted by the size of the addons (covered / measured statements).
+    Per module, and with all the addons together: coverage_whole, failed_whole, not_installable_whole (None when the
+    state has no whole measure).
     'security': the ids of the findings of each rule (the chart counts those not reviewed: reviewing one lowers the
     whole curve), None when the state has none."""
     statuses = [status(e) for e in state.values()]
     scanned = [e for e in state.values() if 'security' in e]
     statements = sum(e.get('statements') or 0 for e in state.values())
     covered = sum(e.get('covered') or 0 for e in state.values())
+    wholes = [e['whole'] for e in state.values() if e.get('whole')]
+    whole_statements = sum(w.get('statements') or 0 for w in wholes)
     return {
         'addons': len(state),
         'loc': sum(e.get('loc') or 0 for e in state.values()),
@@ -88,6 +97,10 @@ def summarize(state: dict) -> dict:
         'enterprise': (sum(1 for e in state.values() if e.get('enterprise'))
                        if any(e.get('enterprise') is not None for e in state.values()) else None),
         'security': security.by_rule(f for e in scanned for f in e['security']) if scanned else None,
+        'coverage_whole': (round(100 * sum(w.get('covered') or 0 for w in wholes) / whole_statements, 1)
+                           if whole_statements else None),
+        'failed_whole': sum(len(w.get('failed') or []) for w in wholes) if wholes else None,
+        'not_installable_whole': sum(1 for w in wholes if w.get('coverage') == NOT_INSTALLABLE) if wholes else None,
     }
 
 
@@ -115,8 +128,9 @@ def enterprise_dependencies(state: dict) -> dict[str, dict[str, list[str]]]:
 
 
 def measured_the_same_way(before: dict, after: dict) -> bool:
-    """Whether two measures of an addon compare: same method, whatever the Odoo version (see series_of)."""
-    return series_of({'mode': before.get('coverage_mode')}) == series_of({'mode': after.get('coverage_mode')})
+    """Whether two measures of an addon compare: taken with the same rules (coverage.RULES), whatever the Odoo
+    version (the user's choice, 2026-11-21: the coverage on Odoo 17 and on 19 compare)."""
+    return before.get('coverage_rules') == after.get('coverage_rules')
 
 
 def compute_diff(old: dict, new: dict) -> dict:
@@ -125,7 +139,7 @@ def compute_diff(old: dict, new: dict) -> dict:
     diff = {
         'added': sorted(new.keys() - old.keys()),
         'removed': sorted(old.keys() - new.keys()),
-        'not_comparable': [],  # addons measured another way than in the previous run: their measures are not compared
+        'not_comparable': [],  # addons measured by another version of jsa: their measures are not compared
         'could_to_cant': [], 'cant_to_could': [],
         'newly_failing': [],  # (addon, tests failing now but not before)
         'fixed': [],  # (addon, tests that failed before and not anymore)
@@ -190,23 +204,29 @@ def parse_date(text) -> Optional[datetime]:
         return None
 
 
+WHOLE = ('coverage', 'failed', 'not_installable')  # measured per module and whole: '<key>_whole' in the history
+
+
 def runs_and_events(history: list[dict]) -> tuple[list[dict], list[dict]]:
-    """The measured runs, and the events added by hand ({"date": ..., "event": "what happened"}, a valid date)."""
-    runs = [line for line in history if not line.get('event')]
+    """The measured runs, in the order of the history, and the events added by hand ({"date": ..., "event": "what
+    happened"}, a valid date). The lines written before jsa measured each run both ways (0.37, the user: the history
+    stays as it is) had a mode: a run in mode 'whole' gives the whole values, 'isolated' or 'both' those per module;
+    the lines of one commit (jsa backfill measured it in both modes) make one run."""
+    runs, by_commit = [], {}
+    for line in history:
+        if line.get('event'):
+            continue
+        line = dict(line)
+        if line.get('mode') == 'whole':
+            line.update({f"{key}_whole": line.pop(key, None) for key in WHOLE})
+        if line.get('commit') in by_commit:
+            by_commit[line['commit']].update({k: v for k, v in line.items() if v is not None})
+            continue
+        if line.get('commit'):
+            by_commit[line['commit']] = line
+        runs.append(line)
     events = [line for line in history if line.get('event') and parse_date(line.get('date'))]
     return runs, events
-
-
-def series_of(run: dict) -> str:
-    """The method of a measured run: it is compared with the runs measured the same way only, whatever their Odoo
-    version (the user's choice, 2026-11-21: the coverage on Odoo 17 and on 19 compare). 'isolated' and 'both' share
-    their method: both take the coverage of each addon alone."""
-    return 'whole' if run.get('mode') == 'whole' else 'one by one'
-
-
-def series_label(method: str, version: Optional[int] = None) -> str:
-    """'whole', 'one by one (isolated, both)'; with a version: the runs on that Odoo version only."""
-    return ("whole" if method == 'whole' else "one by one (isolated, both)") + (f" · Odoo {version} only" if version else "")
 
 
 def append_history(history_file: Path, run: dict):
@@ -307,7 +327,8 @@ def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Res
                   extra: Optional[dict] = None, run: Optional[dict] = None, standard: Optional[dict] = None,
                   measures: Optional[dict] = None, trends: Optional[dict] = None, reviewed: Optional[dict] = None,
                   reviewed_changes: Optional[dict] = None, security_off: Optional[list] = None):
-    """`run` describes a coverage run ({'mode', 'profile'}) when addons were measured now: it is added to the history.
+    """`run` describes a coverage run ({'profile', 'odoo', 'code_date'}) when addons were measured now: it is added to
+    the history.
     `standard`: the results of the standard modules' tests run now; else those of the last time they were run.
     `measures`: the counts of [[report.measures]] of config.toml ({label: count}), recorded with the run.
     `trends`: [report] trends / trends_open of config.toml, the charts shown and unfolded (none: the default).
@@ -339,16 +360,19 @@ def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Res
 
     html = report_html.render(new, summary, summarize(old) if old else None, compute_diff(old, new) if old else None,
                               old_date, load_history(out_dir / HISTORY_FILE), graphs,
-                              {'generated_at': now, **(run or {}), 'standard_tests': standard_tests,
+                              {'generated_at': now, **(run or {}), 'measured': bool(run), 'standard_tests': standard_tests,
                                'measures': list(measures or {}), 'trends': trends or {}, 'reviewed': reviewed,
                                'security_before': before, 'mutation': load_mutation(out_dir),
                                'reviewed_changes': reviewed_changes or {}, 'security_off': security_off})
     (out_dir / REPORT_FILE).write_text(html, encoding='utf-8')
     (out_dir / STATE_FILE).write_text(json.dumps({'schema': SCHEMA, 'generated_at': now, 'addons': new,
                                                   'standard_tests': standard_tests}, indent=1), encoding='utf-8')
-    coverage = f"{summary['coverage']:.0f}% coverage" if summary['coverage'] is not None else "coverage not measured"
+    whole = lambda key, text: f" ({text.format(summary[key])} whole)" if summary.get(key) is not None else ""
+    coverage = (f"{summary['coverage']:.0f}% coverage per module" + whole('coverage_whole', "{:.0f}%")
+                if summary['coverage'] is not None else "coverage not measured")
     typer.echo(f"📦 {summary['addons']} addons, {summary['loc']:,} lines, {coverage}, "
-               f"{summary['tests'] - summary['failed']}/{summary['tests']} tests passed, {summary['not_installable']} not installable")
+               f"{summary['tests'] - summary['failed']}/{summary['tests']} tests passed" + whole('failed_whole', "{} failed")
+               + f", {summary['not_installable']} not installable" + whole('not_installable_whole', "{}"))
     if measures:
         typer.echo("📏 " + ", ".join(f"{label}: {count:,}" for label, count in measures.items())
                    + ("" if run else " (the trends record them with the runs that measure the coverage, -c)"))

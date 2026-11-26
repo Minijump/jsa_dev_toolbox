@@ -18,7 +18,7 @@ def test_the_sample_is_a_valid_plan():
     plan = backfill.read_plan(PLUGIN.parent / "backfill.toml.sample")
     assert [c["commit"] for c in plan["commits"]] == ["4f2a9c1", "v2.0"]
     assert plan["commits"][1]["event"] == "Release 2.0" and plan["events"][0]["date"] == "2025-09-01"
-    assert plan["profiles"] == {} and plan["modes"] == ["whole", "isolated"]  # both by default
+    assert plan["profiles"] == {} and "modes" not in plan
 
 
 def test_mistakes_in_the_plan_are_refused(tmp_path, capsys):
@@ -30,7 +30,8 @@ def test_mistakes_in_the_plan_are_refused(tmp_path, capsys):
                       ("[[commits]]\ncommit = 'a'\n[profiles]\nseventeen = '17'\n", "[profiles] gives a profile"),
                       ("[[commit]]\ncommit = 'a'\n", "commit do(es) not exist"),
                       ("[[commits]]\ncommit = 'a'\nevent = ''\n", "event must be a text"),
-                      ("modes = ['wole']\n[[commits]]\ncommit = 'a'\n", "modes is a list of whole, isolated, both")):
+                      # before 0.37: each commit is now measured per module and whole
+                      ("modes = ['whole']\n[[commits]]\ncommit = 'a'\n", "modes no longer exists (jsa 0.37)")):
         plan.write_text(text)
         with pytest.raises(typer.Exit):
             backfill.read_plan(plan)
@@ -38,8 +39,8 @@ def test_mistakes_in_the_plan_are_refused(tmp_path, capsys):
     with pytest.raises(typer.Exit):
         backfill.read_plan(tmp_path / "missing.toml")
     assert "copy missing.toml.sample" in capsys.readouterr().out
-    plan.write_text("modes = ['whole']\n[[commits]]\ncommit = 'a'\n[profiles]\n17 = 'odoo17'\n")
-    assert backfill.read_plan(plan)["profiles"] == {"17": "odoo17"} and backfill.read_plan(plan)["modes"] == ["whole"]
+    plan.write_text("[[commits]]\ncommit = 'a'\n[profiles]\n17 = 'odoo17'\n")
+    assert backfill.read_plan(plan)["profiles"] == {"17": "odoo17"}
 
 
 def test_the_odoo_version_of_the_code_and_its_profile(monkeypatch):
@@ -68,27 +69,28 @@ def test_events_are_added_once_and_measured_commits_are_skipped(tmp_path):
     events = [{"date": "2025-09-01", "event": "Release 2.0"}, {"date": "2025-10-01T09:00:00", "event": "Hired"}]
     assert backfill.add_events(history, events) == 2
     assert backfill.add_events(history, events) == 0  # run again: not repeated
-    lines = [{"commit": "aaa", "mode": "isolated"}, {"commit": "bbb", "mode": "whole"}, {"mode": "isolated"}]
-    assert backfill.measured_commits(lines) == {("aaa", "isolated"), ("bbb", "whole")}  # per mode
+    lines = [{"commit": "aaa"}, {"commit": "bbb", "mode": "whole"}, {"mode": "isolated"},
+             {"date": "2025-09-01", "event": "x", "commit": "ccc"}]
+    assert backfill.measured_commits(lines) == {"aaa", "bbb"}  # bbb: measured before 0.37, in one mode: not again
 
 
 def test_the_history_follows_backfill_toml(tmp_path):
-    wanted, file_events = {("aaa", "whole"), ("bbb", "whole")}, {("2025-09-01", "Release 2.0")}
+    wanted, file_events = {"aaa", "bbb"}, {("2025-09-01", "Release 2.0")}
     lines = [
-        {"commit": "aaa", "mode": "whole", "coverage": 50.0},          # in backfill.toml: kept
-        {"commit": "aaa", "mode": "isolated", "coverage": 40.0},       # a mode no longer measured: removed
+        {"commit": "aaa", "coverage": 50.0},                           # in backfill.toml: kept
+        {"commit": "bbb", "mode": "isolated", "coverage": 40.0},       # in it, measured before 0.37: kept
         {"commit": "ccc", "mode": "whole", "coverage": 30.0},          # a commit removed from the file: removed
-        {"mode": "whole", "coverage": 70.0, "date": "2026-11-22"},     # a run of 'jsa structure -c': kept
+        {"coverage": 70.0, "date": "2026-11-22"},                      # a run of 'jsa structure -c': kept
         {"date": "2025-09-01", "event": "Release 2.0", "from": "backfill.toml"},   # still in the file: kept
         {"date": "2025-10-01", "event": "Old release", "from": "backfill.toml"},   # removed from the file: removed
         {"date": "2025-11-01", "event": "Added by hand"},                           # never in the file: kept
     ]
     history = tmp_path / "history.jsonl"
     history.write_text("".join(json.dumps(line) + "\n" for line in lines) + "not json, edited by hand\n")
-    assert backfill.rewrite_history(history, lambda line: backfill.synced(line, wanted, file_events)) == 3
+    assert backfill.rewrite_history(history, lambda line: backfill.synced(line, wanted, file_events)) == 2
     kept = history.read_text().splitlines()
     assert [json.loads(text).get("coverage") or json.loads(text).get("event") for text in kept[:-1]] == \
-        [50.0, 70.0, "Release 2.0", "Added by hand"]
+        [50.0, 40.0, 70.0, "Release 2.0", "Added by hand"]
     assert kept[-1] == "not json, edited by hand"  # left as it was
     # an event written by a backfill of before (no "from"), still in the file: adopted, it will go with the file
     assert backfill.synced({"date": "2025-09-01", "event": "Release 2.0"}, wanted, file_events)["from"] == "backfill.toml"

@@ -13,9 +13,6 @@ event = "Release 2.0"               # optional: an event, at the date of this co
 date = "2025-09-01"
 event = "Two developers joined"
 
-# Optional: how each commit is measured (default: both, whole then isolated; one only halves the time)
-# modes = ["whole", "isolated"]
-
 # Optional: the profile of config.toml that runs each Odoo version. By default, the only profile whose Odoo has the
 # version written in the manifests of the commit ("17.0.1.0.0": Odoo 17).
 # [profiles]

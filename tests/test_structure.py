@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 import typer
 
-from jsa.core import addons, odoo
+from jsa.core import addons, config, odoo
 from jsa.structure import codebase, report, report_html
 from jsa.structure.coverage import NOT_INSTALLABLE, Result
 
@@ -77,8 +77,15 @@ def test_status_and_summary():
     summary = report.summarize(NEW)
     assert summary == {"addons": 4, "loc": 26, "measured": 3, "coverage": 90.0,  # 360 / 400: weighted by size
                        "tests": 5, "failed": 1, "not_installable": 1, "no_tests": 1, "enterprise": None,
-                       "security": None}  # a state made before the security review
+                       "security": None,  # a state made before the security review
+                       "coverage_whole": None, "failed_whole": None, "not_installable_whole": None}  # nor whole
     assert report.summarize({})["coverage"] is None
+    # whole: all the addons together, weighted by size too
+    whole = {"a": {**NEW["a"], "whole": {"coverage": 75, "statements": 100, "covered": 75, "failed": ["T.w"]}},
+             "c": {**NEW["c"], "whole": {"coverage": NOT_INSTALLABLE, "statements": 300, "covered": 0, "failed": []}}}
+    assert {k: v for k, v in report.summarize(whole).items() if k.endswith("_whole")} == {
+        "coverage_whole": 18.8, "failed_whole": 1, "not_installable_whole": 1}
+    assert report.status(whole["c"]) == "failing"  # installs alone, not with all the addons
 
 
 def test_enterprise_dependencies(tmp_path):
@@ -102,13 +109,18 @@ def test_enterprise_dependencies(tmp_path):
 
 
 def test_problem_with_all_the_addons_is_failing():
-    entry = {"coverage": 70, "tests": 2, "failed": [], "together": "cannot be installed with all the other addons (x)"}
-    assert report.status(entry) == "failing"
-    page = report_html.render({"a": {**entry, "loc": 1, "depends": []}}, report.summarize({}), None, None, None, [], {},
+    entry = {"coverage": 70, "tests": 2, "failed": [], "whole": {"coverage": NOT_INSTALLABLE, "note": "install failed (x)"}}
+    other = {"coverage": 80, "tests": 2, "failed": [], "whole": {"coverage": 90, "tests": 2, "failed": ["T.with_a"]}}
+    assert report.status(entry) == report.status(other) == "failing"
+    state = {"a": {**entry, "loc": 1, "depends": []}, "b": {**other, "loc": 1, "depends": ["a"]}}
+    page = report_html.render(state, report.summarize({}), None, None, None, [], {},
                               {"generated_at": "2026-01-01T10:00:00",
                                "standard_tests": {"date": "2026-01-01T10:00:00",
                                                   "modules": {"sale": {"tests": 40, "failed": ["TestSale.test_a"]}}}})
-    for expected in ("cannot be installed with all the other addons (x)", "Tests of the standard modules",
+    for expected in ("cannot be installed with all the addons (install failed (x))", "Tests of the standard modules",
+                     "with all the addons (whole): <code>T.with_a</code>", "Failing only with all the addons (whole)",
+                     "2 passed<span class=\"whole\"", ">whole: 1 failed</span>", "80%</span><span class=\"whole\" "
+                     "title=\"With all the addons installed and tested together\">whole 90%</span>",
                      "40 tests in 1 standard modules", "TestSale.test_a", "(standard module, with your addons)"):
         assert expected in page
 
@@ -124,18 +136,18 @@ def test_compute_diff():
 
 
 def test_compute_diff_compares_only_measures_taken_the_same_way():
-    old = {"a": {"loc": 10, "coverage": 80, "failed": [], "coverage_mode": "whole", "odoo": 19},
-           "b": {"loc": 10, "coverage": 50, "failed": ["T.x"], "coverage_mode": "isolated", "odoo": 19},
-           "c": {"loc": 10, "coverage": 70, "failed": [], "coverage_mode": "whole", "odoo": 17}}
-    new = {"a": {"loc": 12, "coverage": 60, "failed": ["T.y"], "coverage_mode": "isolated", "odoo": 19},  # another method
-           "b": {"loc": 10, "coverage": 55, "failed": [], "coverage_mode": "both", "odoo": 19},  # one by one, like isolated
-           "c": {"loc": 10, "coverage": NOT_INSTALLABLE, "failed": [], "coverage_mode": "whole", "odoo": 19}}  # another Odoo
+    old = {"a": {"loc": 10, "coverage": 80, "failed": [], "coverage_rules": 5, "odoo": 19},
+           "b": {"loc": 10, "coverage": 50, "failed": ["T.x"], "coverage_rules": 6, "odoo": 19},
+           "c": {"loc": 10, "coverage": 70, "failed": [], "coverage_rules": 6, "odoo": 17}}
+    new = {"a": {"loc": 12, "coverage": 60, "failed": ["T.y"], "coverage_rules": 6, "odoo": 19},  # another version of jsa
+           "b": {"loc": 10, "coverage": 55, "failed": [], "coverage_rules": 6, "odoo": 19},
+           "c": {"loc": 10, "coverage": NOT_INSTALLABLE, "failed": [], "coverage_rules": 6, "odoo": 19}}  # another Odoo
     diff = report.compute_diff(old, new)
-    assert diff["not_comparable"] == ["a"]  # another Odoo version compares (c), another method does not (a)
+    assert diff["not_comparable"] == ["a"]  # another Odoo version compares (c), measures of other rules do not (a)
     assert diff["metrics_changed"] == [("a", 2, None, 80, 60), ("b", 0, 5, 50, 55)]  # a: its lines only, not its coverage
     assert diff["newly_failing"] == [] and diff["fixed"] == [("b", ["T.x"])] and diff["could_to_cant"] == ["c"]
     page = report_html._changes(diff, "2026-10-25T10:00:00")
-    assert "Coverage and tests of 1 addon not compared: measured another way" in page and "+2 lines" in page
+    assert "Coverage and tests of 1 addon not compared: measured by another version of jsa" in page and "+2 lines" in page
     only = report_html._changes({**report.compute_diff({}, {}), "not_comparable": ["a"]}, None)
     assert "Nothing changed" not in only and "Coverage and tests of 1 addon not compared" in only
 
@@ -175,32 +187,34 @@ def test_dot_hides_or_dots_the_duplicate_links():
         assert expected in page
 
 
-def test_one_trend_per_way_of_measuring_every_odoo_version_together(tmp_path):
-    assert report.series_of({"mode": "isolated", "odoo": 19}) == report.series_of({"mode": "both", "odoo": 17}) == "one by one"
-    assert report.series_of({"mode": "whole", "odoo": 19}) == report.series_of({"mode": "whole"}) == "whole"
-    assert report.series_label("whole") == "whole" and report.series_label("one by one", 17) == "one by one (isolated, both) · Odoo 17 only"
-    run = lambda mode, version, coverage, day: {"date": f"2026-10-{day:02d}T10:00", "mode": mode, "odoo": version,
-                                                "coverage": coverage, "failed": 0, "not_installable": 0}
-    history = [run("whole", 17, 50, 1), run("whole", 17, 52, 2), run("whole", 19, 70, 3), run("isolated", 19, 40, 4),
-               run("whole", 19, 72, 5), run("both", 19, 41, 6)]
+def test_one_trend_two_lines_and_the_old_lines_of_the_history(tmp_path):
+    run = lambda day, version, coverage, whole, **more: {"date": f"2026-10-{day:02d}T10:00", "odoo": version,
+                                                         "coverage": coverage, "coverage_whole": whole, "failed": 1,
+                                                         "failed_whole": 2, "not_installable": 0, "loc": 100, **more}
+    # before 0.37, a run had a mode: kept as it is in the history, read as the values of that way of measuring; the
+    # two lines of one commit (jsa backfill measured it in modes whole and isolated) are one run
+    old = lambda day, mode, coverage, **more: {"date": f"2026-10-{day:02d}T10:00", "mode": mode, "odoo": 17,
+                                              "coverage": coverage, "failed": 0, "not_installable": 0, "loc": 90, **more}
+    history = [old(1, "whole", 50.0), old(2, "isolated", 40.0, commit="abc"), old(2, "whole", 55.0, commit="abc"),
+               old(3, "both", 42.0), run(4, 19, 60.0, 70.0), run(5, 19, 61.0, 72.0)]
+    runs = report.runs_and_events(history)[0]
+    assert [(r.get("coverage"), r.get("coverage_whole")) for r in runs] == [
+        (None, 50.0), (40.0, 55.0), (42.0, None), (60.0, 70.0), (61.0, 72.0)]
+    assert history[0]["coverage"] == 50.0  # the history itself is not changed
     page = report_html._trend(history)
-    options = page[page.index("<select"):page.index("</select>")]
-    # the method of the last run first (shown), every Odoo version together; each version alone one choice away
-    assert options.index("one by one (isolated, both) (2 runs)") < options.index(">whole (4 runs)")
-    assert "whole · Odoo 17 only (2 runs)" in options and "whole · Odoo 19 only (2 runs)" in options
-    assert "one by one (isolated, both) · Odoo" not in options  # one version only: nothing to split
-    shown = page[page.index('data-key="0">'):page.index('data-key="1"')]
-    assert "41%" in shown and "72%" not in shown and "hidden" not in shown[:20]
-    whole = page[page.index('data-key="1"'):page.index('data-key="2"')]
-    coverage = whole[:whole.index('data-chart="failed"')]
+    assert "<select" not in page and "series" not in page  # one trend
+    coverage = page[page.index('data-chart="coverage"'):page.index('data-chart="loc"')]
     zoomed = coverage[:coverage.index('class="chart full"')]  # each chart drawn twice: zoomed (shown) and from 0
-    assert zoomed.count('class="dot"') == 4  # Odoo 17 and 19 on the same curve
-    assert "<title>Odoo 17 → 19</title>" in coverage and "· Odoo 17: 50%" in coverage  # where the version changes
-    assert page.count(" hidden>") == 3
-    assert ".series[hidden]{display:none}" in report_html.CSS  # the charts are display:flex, which beats "hidden"
-    assert report_html._trend([run("whole", 19, 70, 1)]) == ""  # one run: no trend yet
-    single = report_html._trend([run("whole", 19, 70, 1), run("whole", 19, 71, 2)])
-    assert "<select" not in single and '<p class="meta">whole</p>' in single and "→" not in single
+    assert zoomed.count('class="dot"') == 4 and zoomed.count('class="dot l1"') == 4  # per module, whole (dashed)
+    assert zoomed.count("<polyline") == 2 and '<polyline class="l1"' in zoomed
+    assert '<span class="tnow">61%</span><span class="tnote">whole 72%</span>' in coverage  # the last values
+    assert '<span class="lines"><span><i></i>per module</span><span><i class="l1"></i>whole</span></span>' in coverage
+    assert "<title>2026-10-04 10:00 · Odoo 19: per module 60%, whole 70%</title>" in zoomed  # both in its tooltip
+    assert "<title>2026-10-01 10:00 · Odoo 17: whole 50%</title>" in zoomed
+    assert "<title>Odoo 17 → 19</title>" in coverage  # every Odoo version on the same curve, a line where it changes
+    loc = page[page.index('data-chart="loc"'):page.index('data-chart="failed"')]
+    assert '<span class="lines">' not in loc and loc.count("<polyline") == 2  # one line (drawn twice: zoomed, from 0)
+    assert report_html._trend([run(1, 19, 70.0, 75.0)]) == ""  # one run: no trend yet
     release = tmp_path / "odoo" / "release.py"
     release.parent.mkdir()
     release.write_text("version_info = (19, 0, 0, FINAL, 0, '')\n")
@@ -210,25 +224,36 @@ def test_one_trend_per_way_of_measuring_every_odoo_version_together(tmp_path):
     assert odoo.major_version({"odoo_root": str(tmp_path / "nowhere")}) is None
 
 
-def test_tiles_compare_the_measures_with_the_run_measured_the_same_way():
-    run = lambda mode, coverage, failed, loc: {"date": "2026-10-25T10:00", "mode": mode, "odoo": 19, "coverage": coverage,
-                                               "failed": failed, "not_installable": 0, "no_tests": 0, "addons": 2, "loc": loc}
-    history = [run("isolated", 40.0, 2, 100), run("whole", 70.0, 0, 100), run("both", 43.0, 1, 110)]  # the last: this run
-    history[0]["odoo"] = 17  # another Odoo version: compared all the same
+def test_a_chart_of_two_lines_keeps_their_last_labels_apart():
+    chart = report_html.line_chart("Coverage", [("a", (60.0, 60.5)), ("b", (61.0, 61.0))], "%", 100, True,
+                                   names=report_html.LINES)
+    ys = [float(part.split('y="')[1].split('"')[0]) for part in chart.split('<text class="last')[1:]]
+    assert len(ys) == 2 and abs(ys[0] - ys[1]) >= 13
+
+
+def test_tiles_compare_the_measures_with_the_previous_run():
+    run = lambda coverage, failed, loc, **more: {"date": "2026-10-25T10:00", "odoo": 19, "coverage": coverage,
+                                                 "failed": failed, "not_installable": 0, "no_tests": 0, "addons": 2,
+                                                 "loc": loc, **more}
+    # a run of jsa 0.36 in mode whole, then one in mode isolated: each value compares with the last run that has it
+    history = [run(39.0, 4, 100, coverage_whole=50.0, failed_whole=3, not_installable_whole=0),
+               {**run(None, None, 100, mode="whole"), "coverage": 50.0, "failed": 3, "not_installable": 0},
+               run(40.0, 2, 100, mode="isolated"),
+               run(43.0, 1, 110, coverage_whole=52.5, failed_whole=1, not_installable_whole=1)]  # the last: this run
     summary = {**history[-1], "tests": 9, "measured": 2, "enterprise": None}
-    previous_report = run("whole", 70.0, 0, 100)
+    previous_report = run(40.0, 2, 100)
     tiles_of = lambda page: page[page.index('<div class="tiles">'):page.index('</div></div>', page.index('Enterprise dependencies'))]
     tiles = tiles_of(report_html.render({}, summary, previous_report, None, None, history, {},
-                                        {"generated_at": "2026-10-25T10:00:00", "mode": "both", "profile": "19", "odoo": 19}))
-    # coverage and failures: against the previous isolated run (same method), not against the whole run just before;
-    # the change in a few words, which run it is compared with in its tooltip
-    same_way = '<span title="Compared with the previous run measured the same way: one by one (isolated, both)">'
-    assert f'{same_way}+3.0 pts since last run</span>' in tiles
-    assert f'1 failed ({same_way}-1</span>)' in tiles
-    assert "-27" not in tiles
+                                        {"generated_at": "2026-10-25T10:00:00", "measured": True, "profile": "19", "odoo": 19}))
+    # per module in the value, whole under it; the change in a few words, what it is compared with in its tooltip
+    previous = '<span title="Compared with the previous run">'
+    assert f'{previous}+3.0 pts since last run</span>' in tiles
+    assert f'whole: 52% ({previous}+2.5 pts</span>)' in tiles
+    assert f'1 failed ({previous}-1</span>)' in tiles and f'whole: 1 failed ({previous}-2</span>)' in tiles
+    assert f'whole: 1 ({previous}+1</span>)' in tiles  # not installable with all the addons
     assert '<span title="Compared with the previous report">+10 since last run</span>' in tiles  # lines of code
     assert tiles.count('class="tile"') == 6  # one row (no tile for the addons without tests: a trend chart has them)
-    assert "without tests" not in tiles and "branch coverage" in tiles
+    assert "without tests" not in tiles and 'title="Branch coverage of the code inside functions, per module' in tiles
     # at most two lines under each value
     assert all(tile.count('class="sub"') <= 2 for tile in tiles.split('class="tile"'))
     # a report that measured nothing compares no measure
@@ -237,7 +262,7 @@ def test_tiles_compare_the_measures_with_the_run_measured_the_same_way():
 
 
 def _run(day, coverage, loc, todo=None, **more):
-    line = {"date": f"2026-10-{day:02d}T10:00:00", "mode": "whole", "odoo": 19, "coverage": coverage, "loc": loc,
+    line = {"date": f"2026-10-{day:02d}T10:00:00", "odoo": 19, "coverage": coverage, "loc": loc,
             "tests": 100 + day, "failed": 1, "not_installable": 0, "no_tests": 2, "addons": 10, "enterprise": None, **more}
     return {**line, "measures": {"TODO": todo}} if todo is not None else line
 
@@ -408,3 +433,53 @@ def test_state_history_and_report_files(tmp_path):
 def test_coverage_color_is_continuous():
     colors = [report_html.coverage_color(c) for c in (0, 50, 80, 100)]
     assert colors == ["hsl(0,55%,58%)", "hsl(60,55%,58%)", "hsl(96,55%,58%)", "hsl(120,55%,58%)"]  # 80% is not 100%
+
+
+def test_structure_measures_per_module_then_whole(tmp_path, monkeypatch):
+    roots, out = tmp_path / "addons", tmp_path / "out"
+    make_addon(roots, "a")
+    make_addon(roots, "b", "{'depends': ['a']}")
+    calls = []
+
+    def measure(addons, graph, profile, mode, log_file, **options):
+        calls.append((mode, sorted(addons), options.get("all_or_nothing", False)))
+        if mode == "isolated":
+            return {name: Result(60, tests=2, statements=10, covered=6, files={"m.py": "3"}) for name in addons}, None
+        if options.get("all_or_nothing"):  # one addon does not install: none of them together
+            return {name: Result(NOT_INSTALLABLE, note="not tested: a failed to install (all or nothing)") for name in addons}, None
+        return {"a": Result(80, tests=2, statements=10, covered=8),
+                "b": Result(70, tests=2, failed=["T.with_a"], statements=10, covered=7)}, None
+
+    monkeypatch.setattr(codebase.coverage, "measure", measure)
+    monkeypatch.setattr(codebase.coverage, "never_run", lambda addons, profile: {name: 10 for name in addons})
+    monkeypatch.setattr(codebase.odoo, "source_version", lambda profile: "odoo-commit")
+    monkeypatch.setattr(codebase.odoo, "major_version", lambda profile: 19)
+    monkeypatch.setattr(codebase, "standard_depends", lambda profile: {"base": []})
+    monkeypatch.setattr(config, "REVIEWED_FILE", tmp_path / "reviewed.toml")
+    conf, profile = {"codebase": {"addons_roots": [str(roots)]}}, {"python": "python"}
+    analyse = lambda **options: codebase.analyse(conf, [roots], out, "19", profile, **options)
+
+    run = analyse()
+    assert calls == [("isolated", ["a", "b"], False), ("whole", ["a", "b"], False)] and "mode" not in run
+    state, _ = report.load_state(out)
+    assert state["b"]["coverage"] == 60 and state["b"]["whole"]["failed"] == ["T.with_a"]
+    assert "files" not in state["b"]["whole"] and state["b"]["files"] == {"m.py": "3"}  # uncovered lines: per module
+    line = report.load_history(out / report.HISTORY_FILE)[-1]
+    assert (line["coverage"], line["coverage_whole"], line["failed"], line["failed_whole"]) == (60.0, 75.0, 0, 1)
+    assert "mode" not in line
+    # nothing changed: nothing runs, the whole measure is kept too
+    calls.clear()
+    assert analyse() is None and calls == [] and report.load_state(out)[0]["b"]["whole"]["coverage"] == 70
+    # b changed: measured again alone, the whole run again (the addons interact)
+    (roots / "b" / "models" / "x.py").write_text("x = 1\n")
+    analyse()
+    assert calls == [("isolated", ["b"], False), ("whole", ["a", "b"], False)]
+    # a report without -c keeps both measures of the unchanged addons
+    codebase.analyse(conf, [roots], out)
+    assert report.load_state(out)[0]["a"]["whole"]["coverage"] == 80
+    # all or nothing (jsa backfill): nothing installs together, whole counts as 0%, the measures per module stay
+    calls.clear()
+    analyse(measure_all=True, all_or_nothing=True)
+    assert calls == [("isolated", ["a", "b"], False), ("whole", ["a", "b"], True)]
+    line = report.load_history(out / report.HISTORY_FILE)[-1]
+    assert (line["coverage"], line["coverage_whole"], line["not_installable_whole"]) == (60.0, 0.0, 2)

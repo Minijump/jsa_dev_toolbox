@@ -5,7 +5,6 @@ import re
 import subprocess
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -19,12 +18,6 @@ LOC_EXTENSIONS = {'.py', '.xml', '.js', '.scss', '.css', '.csv'}
 LOC_EXCLUDED_DIRS = {'migrations', 'tests', 'i18n'}
 MEASURE_KEYS = ('label', 'pattern', 'files')
 TEST_TIMEOUT = 10  # minutes a test (or a setUpClass) may take in a coverage run, unless [codebase] test_timeout
-
-
-class Mode(str, Enum):
-    whole = "whole"
-    isolated = "isolated"
-    both = "both"
 
 
 def code_files(addon: Path) -> Iterator[Path]:
@@ -172,7 +165,7 @@ def fingerprints(addons: dict[str, Path], graph: DependencyGraph) -> dict[str, s
 
 
 def reusable(previous: dict, key: dict) -> bool:
-    """A previous measure can be reused if it was made on the same code, with the same profile and mode."""
+    """A previous measure can be reused if it was made on the same code, with the same profile and rules."""
     return previous.get('coverage') is not None and all(previous.get(k) == v for k, v in key.items())
 
 
@@ -180,21 +173,21 @@ def reusable(previous: dict, key: dict) -> bool:
 
 
 def structure(
-    coverage_enabled: bool = typer.Option(False, "--coverage", "-c", help="Measure the test coverage of each addon"),
+    coverage_enabled: bool = typer.Option(False, "--coverage", "-c", help="Run the tests of the addons under coverage: "
+                                          "each addon alone with its dependencies (per module), then all together (whole)"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile key from config.toml [profiles] (required with --coverage)"),
-    mode: Mode = typer.Option(Mode.whole, "--mode", "-m", help="whole: all addons installed and tested together (fast). "
-                              "isolated: each addon on a database with only its dependencies (catches missing dependencies). "
-                              "both: the coverage of isolated, then all addons tested together (catches what breaks only with the others)"),
-    standard_tests: bool = typer.Option(False, "--standard-tests", help="With -c in mode whole or both: also run the tests of the "
-                                        "standard modules your addons need, with your addons installed, like odoo.sh (long)"),
+    standard_tests: bool = typer.Option(False, "--standard-tests", help="With -c: also run the tests of the standard modules "
+                                        "your addons need, with your addons installed, like odoo.sh (in the whole run; long)"),
     measure_all: bool = typer.Option(False, "--all", "-a", help="Measure every addon, even those unchanged since the last measure"),
     open_it: bool = typer.Option(False, "--open", "-o", help="Open the report in the browser when it is ready"),
 ):
     """Generate the structure of the custom codebase (addons folders from config.toml).
 
-    With --coverage / -c, also run the tests of the addons under coverage (creates and drops temporary databases).
-    Addons unchanged since the last measure (same code, same Odoo commit, same mode) keep their previous result; in
-    mode whole, any change runs everything again.
+    With --coverage / -c, also run the tests of the addons under coverage (creates and drops temporary databases),
+    two ways: each addon alone on a database with only its dependencies (per module: catches missing dependencies),
+    then all of them together (whole: like production, catches what breaks only with the others). Per module, the
+    addons unchanged since the last measure (same code, same Odoo commit) keep their previous result; the whole run
+    is made again when anything changed.
     """
     conf = config.load_config()
     measures = measures_from_config(conf)
@@ -212,10 +205,10 @@ def structure(
             typer.echo("❌ --profile/-p is required when --coverage/-c is enabled.")
             raise typer.Exit(code=1)
         coverage_profile = coverage_profile_of(profile, conf)
-    if standard_tests and (not coverage_enabled or mode == Mode.isolated):
-        typer.echo("❌ --standard-tests needs --coverage/-c, in mode whole or both.")
+    if standard_tests and not coverage_enabled:
+        typer.echo("❌ --standard-tests needs --coverage/-c.")
         raise typer.Exit(code=1)
-    analyse(conf, roots, config.ANALYSIS_DIR, profile, coverage_profile, mode,
+    analyse(conf, roots, config.ANALYSIS_DIR, profile, coverage_profile,
             measure_all or standard_tests, standard_tests, measures, trends)  # --standard-tests: a full run is asked for
     if open_it:
         open_report()
@@ -267,13 +260,13 @@ def coverage_profile_of(name: str, conf: dict) -> dict:
 
 
 def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str] = None,
-            coverage_profile: Optional[dict] = None, mode: Mode = Mode.whole, measure_all: bool = False,
-            standard_tests: bool = False, measures: list[Measure] = (), trends: Optional[dict] = None,
-            all_or_nothing: bool = False) -> Optional[dict]:
+            coverage_profile: Optional[dict] = None, measure_all: bool = False, standard_tests: bool = False,
+            measures: list[Measure] = (), trends: Optional[dict] = None, all_or_nothing: bool = False) -> Optional[dict]:
     """What 'jsa structure' does: the report of the addons of `roots`, written in `out_dir` (state.json, history.jsonl,
-    report.html), with their tests run under coverage when `coverage_profile` (named `profile`) is given.
-    `all_or_nothing` (mode whole): an addon that cannot install makes them all not installable, as in production,
-    instead of being left out and the others tried again (jsa backfill).
+    report.html), with their tests run under coverage when `coverage_profile` (named `profile`) is given: per module
+    (each addon alone) and whole (all together, kept under 'whole' in the state of each addon).
+    `all_or_nothing` (whole): an addon that cannot install makes them all not installable together, as in production,
+    instead of being left out and the others tried again (jsa backfill); the measures per module stay.
     Returns the run added to the history, None when nothing was measured."""
     reviewed = security.load_reviewed(config.REVIEWED_FILE)  # a mistake there stops before anything is measured
     reviewed_changes = security.load_reviewed(config.REVIEWED_FILE, 'mutation')
@@ -290,7 +283,8 @@ def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str]
 
     previous, _ = report.load_state(out_dir)
     state_extra = {name: {'fingerprint': prints[name], 'schema': report.SCHEMA} for name in addons}
-    results: dict[str, Optional[coverage.Result]] = {}
+    results: dict[str, Optional[coverage.Result]] = {}  # per module
+    whole: dict[str, dict] = {}  # all the addons together: 'whole' in the state of each addon
     run = None  # set when addons are measured now
     standard = None  # results of the tests of the standard modules, when run now
     if not coverage_profile:
@@ -299,58 +293,68 @@ def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str]
             prev = previous.get(name, {})
             if reusable(prev, state_extra[name]):
                 results[name] = coverage.Result.from_state(prev)
-                state_extra[name].update({k: prev.get(k) for k in ('coverage_mode', 'profile', 'standard_version',
-                                                                     'coverage_rules', 'odoo')})
+                state_extra[name].update({k: prev.get(k) for k in ('profile', 'standard_version', 'coverage_rules', 'odoo')})
+                if prev.get('whole'):
+                    whole[name] = prev['whole']
             else:
                 results[name] = None
     else:
-        key = {'coverage_mode': mode.value, 'profile': profile, 'standard_version': odoo.source_version(coverage_profile),
-               'coverage_rules': coverage.RULES}
+        key = {'profile': profile, 'standard_version': odoo.source_version(coverage_profile), 'coverage_rules': coverage.RULES}
         odoo_version = odoo.major_version(coverage_profile)
         for name in addons:
             # 'odoo' is kept out of the key: a reused measure was taken on the same Odoo (same standard_version)
             state_extra[name].update(key, odoo=odoo_version)
         installable = {name: path for name, path in addons.items() if manifests[name].get('installable', True)}
+        together: dict[str, coverage.Result] = {}
         for name in addons.keys() - installable.keys():
-            results[name] = coverage.Result(coverage.NOT_INSTALLABLE, note="marked as not installable")
+            results[name] = together[name] = coverage.Result(coverage.NOT_INSTALLABLE, note="marked as not installable")
         unchanged = [name for name in installable if reusable(previous.get(name, {}), state_extra[name])]
-        # isolated (and the measures alone of both): each unchanged addon keeps its result. whole: addons interact,
-        # any change means a full run
-        keep = [] if measure_all else (unchanged if mode != Mode.whole or len(unchanged) == len(installable) else [])
+        # per module: each unchanged addon keeps its result. whole: the addons interact, any change runs it again
+        keep = [] if measure_all else unchanged
         for name in keep:
             results[name] = coverage.Result.from_state(previous[name])
         if keep:
             typer.echo(f"♻️ {len(keep)} unchanged addon(s) keep their previous measure (use --all to measure everything)")
         to_measure = {name: path for name, path in installable.items() if name not in keep}
-        if to_measure:
+        if not to_measure and all(previous[name].get('whole') for name in keep):
+            together.update({name: coverage.Result.from_state(previous[name]['whole']) for name in keep})
+        else:
             log_file = out_dir / "coverage_odoo.log"
-            typer.echo(f"📊 Measuring the coverage of {len(to_measure)} addon(s), mode '{mode.value}', each test and "
-                       f"setUpClass {test_timeout(conf):g} min at most (Odoo log: {log_file})")
-            measured, standard = coverage.measure(to_measure, graph, coverage_profile, Mode.isolated.value if mode == Mode.both
-                                                  else mode.value, log_file, standard_tests=standard_tests,
-                                                  time_limit=test_timeout(conf),
-                                                  all_or_nothing=all_or_nothing and mode == Mode.whole)
-            results.update(measured)
-            if mode == Mode.both:
-                alone = {name: coverage.alone_part(results[name]) for name in installable}
-                together = {name: path for name, path in installable.items() if alone[name].coverage != coverage.NOT_INSTALLABLE}
-                typer.echo(f"🧩 Then the {len(together)} addons installed and tested together: what breaks only with the others")
-                found, standard = coverage.measure(together, graph, coverage_profile, Mode.whole.value, log_file,
-                                                   measure_coverage=False, standard_tests=standard_tests, append=True,
-                                                   time_limit=test_timeout(conf))
-                results.update(coverage.merge_together(alone, found))
-            run = {'mode': mode.value, 'profile': profile, 'odoo': odoo_version}
+            typer.echo(f"📊 Measuring the coverage per module ({len(to_measure)} addon(s), each alone with its "
+                       f"dependencies), then whole (the {len(installable)} addons together); each test and setUpClass "
+                       f"{test_timeout(conf):g} min at most (Odoo log: {log_file})")
+            if to_measure:
+                measured, _ = coverage.measure(to_measure, graph, coverage_profile, "isolated", log_file,
+                                               time_limit=test_timeout(conf))
+                results.update(measured)
+            typer.echo(f"🧩 Whole: the {len(installable)} addons installed and tested together")
+            found, standard = coverage.measure(installable, graph, coverage_profile, "whole", log_file,
+                                               standard_tests=standard_tests, append=bool(to_measure),
+                                               time_limit=test_timeout(conf), all_or_nothing=all_or_nothing)
+            together.update(found)
+            run = {'profile': profile, 'odoo': odoo_version}
             if written:
                 run['code_date'] = written
-        problems = {name: r for name, r in results.items() if r.coverage == coverage.NOT_INSTALLABLE or r.failures}
-        for name, r in sorted(problems.items()):
-            typer.echo(f"⚠️ {name}: {coverage.describe(r)}")
+        problem = lambda r: r.coverage == coverage.NOT_INSTALLABLE or r.failures
+        for name in sorted(addons):
+            alone, other = results[name], together[name]
+            if problem(alone):
+                typer.echo(f"⚠️ {name}: {coverage.describe(alone)}")
+            if problem(other) and coverage.describe(other) != coverage.describe(alone):
+                typer.echo(f"⚠️ {name}, with all the addons (whole): {coverage.describe(other)}")
         # their tests never ran: 0% covered, weighed with what coverage would have measured in them
-        unweighed = {name: addons[name] for name, r in results.items() if r.coverage == coverage.NOT_INSTALLABLE and not r.statements}
+        unweighed = {name: addons[name] for name in addons
+                     if any(r.coverage == coverage.NOT_INSTALLABLE and not r.statements for r in (results[name], together[name]))}
         if unweighed:
             for name, statements in coverage.never_run(unweighed, coverage_profile).items():
-                results[name] = replace(results[name], statements=statements, covered=0)
+                for table in (results, together):
+                    if table[name].coverage == coverage.NOT_INSTALLABLE and not table[name].statements:
+                        table[name] = replace(table[name], statements=statements, covered=0)
+        # the whole run in the state: no uncovered lines (the page shows those of the measure per module)
+        whole = {name: {k: v for k, v in asdict(r).items() if k != 'files'} for name, r in together.items()}
 
+    for name, measure in whole.items():  # added after the cache decisions, like what follows
+        state_extra[name]['whole'] = measure
     # direct dependencies on Odoo enterprise (None: not checked). Added last: not part of the cache key above
     enterprise = enterprise_modules(conf)
     for name in addons:

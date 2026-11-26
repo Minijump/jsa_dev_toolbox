@@ -1,12 +1,11 @@
-"""Test coverage of the custom addons, in three modes:
+"""Test coverage of the custom addons, measured two ways ('jsa structure -c' does both, see codebase.analyse):
 
-- whole: all custom addons installed together in one database, one test run (fast, like production).
+- per module (run_isolated): each addon tested on a database holding exactly its dependencies, with its own tests
+  (catches undeclared dependencies). Databases are built from "smart snapshots": a database with some dependencies
+  installed is copied (seconds) and completed, instead of installing every dependency again for every addon.
+- whole (run_whole): all custom addons installed together in one database, one test run, like production: the tests
+  of an addon also run the code of those it depends on, and a test overridden in another addon counts.
   If an addon fails to install, it is excluded (with the addons depending on it) and the run is retried.
-- isolated: each addon tested on a database holding exactly its dependencies (catches undeclared dependencies).
-  Databases are built from "smart snapshots": a database with some dependencies installed is copied (seconds)
-  and completed, instead of installing every dependency again for every addon.
-- both: the coverage of isolated, then a whole run without coverage, for what breaks only when all the addons are
-  installed together (see merge_together).
 
 Standard dependencies are installed once in a snapshot, so a retry or a new addon starts from a copy of it. With
 the tests of the standard modules (whole run only), everything is installed in one go instead, like odoo.sh: the
@@ -16,7 +15,7 @@ import json
 import subprocess
 import tempfile
 import uuid
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Optional
 
@@ -33,12 +32,12 @@ NO_REPORT = -2
 # by its tests, so it would only lower the coverage. Tests themselves and manifests neither.
 OMITTED = ("*/__manifest__.py", "*/__init__.py", "*/tests/*", "*/hooks.py", "*/hook.py", "*/hooks/*",
            "*/migrations/*", "*/upgrades/*")
-RULES = 5  # version of what is measured: the measures of another version are not reused (3: demo data on Odoo 19+;
+RULES = 6  # version of what is measured: the measures of another version are not reused (3: demo data on Odoo 19+;
 # 4: an addon that does not install counts as 0% covered, see never_run; 5: only the code inside functions, run by the
-# tests, see module_coverage). Measures of another version are not compared either (report.measured_the_same_way).
+# tests, see module_coverage; 6: per module and whole, both measured). Measures of another version are not compared
+# either (report.measured_the_same_way).
 MIN_COVERAGE = (7, 6)  # coverage.py reports each function apart since 7.6 (July 2024)
 TESTS_CONTEXT = "test"  # what coverage records while a test class runs (odoo_time_limit.py switches to it)
-TOGETHER = " (with all the addons)"  # mode 'both': a test that fails only when all the addons are installed
 
 
 def too_old(version: str) -> bool:
@@ -58,7 +57,6 @@ class Result:
     statements: int = 0  # lines + branches measured
     covered: int = 0
     files: dict[str, str] = field(default_factory=dict)  # {file with uncovered lines: "12-15, 40"}
-    together: str = ""  # mode 'both': what goes wrong only when it is installed and tested with all the others
 
     @property
     def failures(self) -> int:
@@ -304,41 +302,18 @@ def run_isolated(addons: dict[str, Path], graph: DependencyGraph, runner: OdooRu
     return results
 
 
-def alone_part(result: Result) -> Result:
-    """A result of mode 'both' without what comes from the run with all the addons together."""
-    return replace(result, failed=[t for t in result.failed if not t.endswith(TOGETHER)], together="")
-
-
-def merge_together(alone: dict[str, Result], together: dict[str, Result]) -> dict[str, Result]:
-    """Mode 'both': the results of each addon measured alone (coverage, tests, missing dependencies), plus what goes
-    wrong only when all the addons are installed and tested together: it cannot be installed with the others, or a
-    test fails only then (listed with the suffix TOGETHER)."""
-    merged = {}
-    for name, result in alone.items():
-        result, other = alone_part(result), together.get(name)
-        if other and result.coverage != NOT_INSTALLABLE:
-            if other.coverage == NOT_INSTALLABLE:
-                result.together = f"cannot be installed with all the other addons ({other.note or 'see the log'})"
-            elif only := [t for t in other.failed if t not in result.failed]:
-                result.failed = result.failed + [t + TOGETHER for t in only]
-                result.together = f"{len(only)} test(s) fail only when all the addons are installed"
-        merged[name] = result
-    return merged
-
-
 def describe(result: Result) -> str:
     if result.coverage == NOT_INSTALLABLE:
         return f"could not install ({result.note})" if result.note else "could not install"
     text = "no python to measure" if result.coverage == NO_REPORT else f"{result.coverage}% coverage"
-    return (f"{text}, {result.tests} test(s)" + (f", {result.failures} failed" if result.failures else "")
-            + (f"; {result.together}" if result.together else ""))
+    return f"{text}, {result.tests} test(s)" + (f", {result.failures} failed" if result.failures else "")
 
 
 def measure(addons: dict[str, Path], graph: DependencyGraph, profile: dict, mode: str, log_file: Path, *,
             measure_coverage: bool = True, standard_tests: bool = False, append: bool = False,
             time_limit: Optional[float] = None, all_or_nothing: bool = False) -> tuple[dict[str, Result], Optional[dict]]:
-    """Results of the given (installable) addons in mode 'whole' or 'isolated' ('both' is the two: see
-    merge_together), and those of the tests of the standard modules (whole only; None when not run).
+    """Results of the given (installable) addons in mode 'whole' (all together) or 'isolated' (per module), and those
+    of the tests of the standard modules (whole only; None when not run).
     Temporary databases and filestores are always cleaned up. `append`: add to the log of a previous measure.
     `time_limit`: minutes a test, or the setUpClass of a test class, may take (see odoo.install).
     `all_or_nothing` (whole): one addon that cannot install makes them all not installable (see run_whole)."""
