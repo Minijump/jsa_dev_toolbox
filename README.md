@@ -39,12 +39,6 @@ are already there: 2FA off, every password `admin`, ...). Put your dumps in `dum
 | **Plugins** (shipped as examples, in `plugins/`) | | |
 | `jsa backfill` | measures the old commits listed in `plugins/backfill/backfill.toml` (each with the profile of its Odoo version, in modes whole and isolated) for the trends of the report, with your events; the history follows the file, a measure added to `config.toml` is counted on the commits already measured | `--dry-run`: show the commits, their Odoo version and profile, what would be removed or counted; measure nothing |
 | `jsa quote-pdfs <db>` | puts back the PDF files of the quotation headers and footers (Odoo 18+), from `plugins/quote_pdfs/` | `-p <profile>` (required): the Odoo of the database<br>`--list`: only list them, with their id |
-| **UI tests** (optional) | | |
-| `jsa uitests setup` | downloads Robot Framework and a browser into `uitests/.env`; the commands below exist once it is done | |
-| `jsa uitests run [tests]` | plays the tests in a browser, writes a report with a picture of each failure | `--url`: a running Odoo (default `http://localhost:8069`)<br>`-d`, `--db`: the database to test<br>`-p <profile>`: start that Odoo for the time of the tests<br>`-n`, `--new-db` (with `-p`): test on a fresh database with your addons and demo data<br>`--rebuild`: build that database again<br>`--keep-db`: keep the database of the run<br>`-w`, `--watch`: show the browser, slowed down<br>`-o`, `--open`: open the report at the end |
-| `jsa uitests report` | opens the last report | |
-| `jsa uitests keywords` | the keywords usable in a test | `--no-open`: write the list without opening it |
-| `jsa uitests remove` | deletes what `setup` downloaded (your tests stay) | |
 | **jsa** | | |
 | `jsa doctor` | checks PostgreSQL, graphviz, `config.toml`, the profiles and the plugins | |
 | `jsa version` | which code runs, and whether the repository has newer commits | `--no-fetch`: do not ask the remote |
@@ -53,13 +47,6 @@ are already there: 2FA off, every password `admin`, ...). Put your dumps in `dum
 `--data-dir` (`restore`, `snapshot`, `reset`, `clone`, `remove`, `doctor`): Odoo's data folder, where the filestores
 are, when it is not `~/.local/share/Odoo`. `jsa <command> --help` describes every argument and option.
 
-## UI tests (proof of concept)
-Acceptance tests written as plain lines of Odoo keywords (`Open Menu  Sales`, `Set Field  Customer  Gemini Furniture`,
-`Click Button  Confirm`), played in a real browser. Optional: nothing is downloaded until `jsa uitests setup`.
-
 ## More
-The [guide](docs/guide.md) covers the configuration, each command in detail, writing ui tests and keywords, your own
-commands (plugins) and the development of jsa. License: [MIT](LICENSE).
-
-## Roadmap
-- **Improve user accceptance tests**
+The [guide](docs/guide.md) covers the configuration, each command in detail, your own commands (plugins) and the
+development of jsa. License: [MIT](LICENSE).

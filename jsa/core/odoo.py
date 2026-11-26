@@ -1,4 +1,4 @@
-"""Running the Odoo of a profile: installing modules while following its log, serving a database for a while."""
+"""Running the Odoo of a profile: installing modules while following its log."""
 import os
 import queue
 import re
@@ -7,8 +7,6 @@ import socket
 import subprocess
 import threading
 import time
-import urllib.request
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from collections import Counter
 from pathlib import Path
@@ -334,32 +332,6 @@ def installed_modules(db: str, modules) -> set[str]:
         return set()
     names = ", ".join(f"'{m}'" for m in modules)
     return set(pg.psql(db, f"SELECT name FROM ir_module_module WHERE state = 'installed' AND name IN ({names});").split())
-
-
-@contextmanager
-def serving(profile: dict, db: str, log_file: Path, data_dir: Optional[Path] = None):
-    """Run the Odoo of a profile on a database for the time of the block. Gives its url, None if it did not start."""
-    url = f"http://127.0.0.1:{free_port()}"
-    cmd = [profile['python'], profile['odoo_bin'], "-d", db, f"--db-filter=^{db}$", "--addons-path",
-           ",".join(profile['addons_paths']), f"--http-port={url.rsplit(':', 1)[1]}", "--http-interface=127.0.0.1",
-           "--max-cron-threads=0", "--log-level=warn"] + (["--data-dir", str(data_dir)] if data_dir else [])
-    with open(log_file, "w") as out:
-        process = subprocess.Popen(cmd, env=config.odoo_env(profile), stdout=out, stderr=subprocess.STDOUT)
-        try:
-            deadline = time.monotonic() + 120
-            while True:
-                if process.poll() is not None or time.monotonic() > deadline:
-                    url = None
-                    break
-                try:
-                    urllib.request.urlopen(f"{url}/web/login", timeout=5).close()
-                    break
-                except OSError:
-                    time.sleep(1)
-            yield url
-        finally:
-            process.terminate()
-            process.wait(timeout=30)
 
 
 def supports(profile: dict, option: str) -> bool:

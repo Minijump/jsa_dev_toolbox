@@ -11,7 +11,6 @@ from .core import config, pg, plugins
 from .core.addons import find_addons
 from .db import restore, restore_sql, restore_steps
 from .structure import coverage
-from .uitests import commands as uitests
 
 OK, WARN, FAIL = "✅", "⚠️", "❌"
 Check = tuple[str, str, str]  # level, icon, message
@@ -145,22 +144,11 @@ def check_dumps() -> Iterator[Check]:
             yield WARN, "🐘", f"{zip_path.name}: {problem[0]} {problem[1]} ('jsa restore' refuses it until then)"
 
 
-def check_uitests() -> Iterator[Check]:
-    """Only when the optional feature is set up."""
-    if not uitests.is_active():
-        return
-    problem = uitests.browser_problem()
-    if problem:
-        yield FAIL, "🎭", f"ui tests: their browser does not start ({problem[:200]}): run 'jsa uitests setup'"
-    else:
-        yield OK, "🎭", "ui tests set up, their browser starts"
-
-
 def doctor(data_dir: Path = typer.Option(config.DEFAULT_DATA_DIR, "--data-dir", help="Odoo data_dir, where the filestores are")):
     """Check that everything jsa needs is installed and configured."""
     typer.echo("🩺 Checking your setup...")
     counts = {OK: 0, WARN: 0, FAIL: 0}
-    for check in (check_postgres(data_dir), check_tools(), check_config(), check_dumps(), check_uitests()):
+    for check in (check_postgres(data_dir), check_tools(), check_config(), check_dumps()):
         for level, icon, message in check:
             counts[level] += 1
             typer.echo(f"{level} {icon} {message}")

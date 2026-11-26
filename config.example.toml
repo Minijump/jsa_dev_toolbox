@@ -66,17 +66,3 @@ enterprise = "~/projects/enterprise"  # optional; its addons are the "enterprise
 # addons_paths = ["~/projects/my_company_addons_17", "~/projects/enterprise", "~/projects/odoo/addons"]
 #                                                   # default: your addons_roots, then enterprise, then odoo_root/addons
 # db_prefix = "cov17"                               # default: cov (the temporary databases of the coverage runs)
-
-# ui tests ('jsa uitests run', once set up with 'jsa uitests setup')
-[uitests]
-url = "http://localhost:8069"  # a running Odoo; or let jsa start one with: jsa uitests run -p <profile> --db <db>
-# What 'jsa uitests run -p <profile> --new-db' installs in the database it makes for the tests
-# (default: every custom addon of [codebase] addons_roots, with demo data)
-# modules = ["sale_management", "my_addon"]
-# demo = false
-# db = "my_test_db"            # needed when that Odoo serves several databases
-# password = "admin"           # password of every user of the tested database (default: admin, what 'jsa restore' sets)
-# Your own tests and keywords, e.g. in a private repository (default: your tests in uitests/tests/ and your
-# keyword files in uitests/, a folder ignored by git; the example tests of jsa/uitests/examples if you have none)
-# tests = "~/projects/my_private_ui_tests/tests"
-# keywords_dirs = ["~/projects/my_private_ui_tests/keywords"]

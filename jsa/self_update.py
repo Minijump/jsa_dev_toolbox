@@ -94,14 +94,34 @@ def update():
     # would be installed again, and the installed code would never match the toolbox folder
     shutil.rmtree(config.TOOLBOX_DIR / "build", ignore_errors=True)
     toolbox, dist = shlex.quote(str(config.TOOLBOX_DIR)), config.DIST_NAME
-    # pipx output is only shown if the reinstall fails. 'uitests sync' updates the ui tests environment, if set up
+    # pipx output is only shown if the reinstall fails
     script = (f"{pipx} uninstall {dist} >/dev/null 2>&1; out=$({pipx} install -e {toolbox} 2>&1)"
-              f" && echo '✅ jsa updated' && jsa version --no-fetch && jsa uitests sync"
+              f" && echo '✅ jsa updated' && jsa version --no-fetch"
               f" || {{ echo \"$out\"; echo '❌ Reinstall failed, run: cd {toolbox} && pipx install -e .'; exit 1; }}")
     # replace this process: the reinstall deletes the environment jsa is running from
     os.execvp("sh", ["sh", "-c", script])
 
 
+def ui_tests_removed():
+    """'jsa uitests sync', hidden: 'jsa update' of jsa 0.35 and older ends with it, run by the new code. The ui tests
+    left jsa in 0.36: what their setup downloaded (uitests/.env, about 900 MB) and their reports are deleted, the
+    tests and keywords written in uitests/ are kept. Never fails: that update would then say the reinstall failed.
+    To remove once every install is past 0.36."""
+    folder = config.TOOLBOX_DIR / "uitests"
+    if not folder.is_dir():
+        return
+    for name in (".env", "results", "__pycache__"):
+        shutil.rmtree(folder / name, ignore_errors=True)
+    yours = [p for p in folder.rglob("*") if p.is_file() and "__pycache__" not in p.parts]
+    if not yours:
+        shutil.rmtree(folder, ignore_errors=True)
+    typer.echo("🧹 The ui tests are no longer part of jsa: their browser and reports are deleted"
+               + (f"; {len(yours)} file(s) of yours stay in {folder}: delete it when you no longer need them" if yours else ""))
+
+
 def register(app: typer.Typer):
     app.command()(version)
     app.command()(update)
+    leftover = typer.Typer()
+    leftover.command("sync")(ui_tests_removed)
+    app.add_typer(leftover, name="uitests", hidden=True)

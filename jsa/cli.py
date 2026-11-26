@@ -7,10 +7,10 @@ import sys
 
 import typer
 
-from . import db, doctor, self_update, structure, uitests
+from . import db, doctor, self_update, structure
 from .core import config, plugins
 
-FEATURES = (db, structure, uitests, doctor, self_update)  # the three features, then jsa's own commands
+FEATURES = (db, structure, doctor, self_update)  # the two features, then jsa's own commands
 
 app = typer.Typer(no_args_is_help=True)
 

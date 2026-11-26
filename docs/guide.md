@@ -1,14 +1,13 @@
 # jsa guide
 
-Everything the [README](../README.md) leaves out: the full setup, the configuration, how each command works, the ui
-tests, your own commands and the development of jsa itself.
+Everything the [README](../README.md) leaves out: the full setup, the configuration, how each command works, your own
+commands and the development of jsa itself.
 
 - [Installation in detail](#installation-in-detail)
 - [config.toml](#configtoml)
 - [Databases](#databases)
 - [Codebase report and test coverage](#codebase-report-and-test-coverage)
 - [Finding the commit that broke a test](#finding-the-commit-that-broke-a-test)
-- [UI tests](#ui-tests)
 - [Your own commands (plugins)](#your-own-commands-plugins)
 - [Odoo versions](#odoo-versions)
 - [Developing jsa](#developing-jsa)
@@ -25,7 +24,7 @@ tests, your own commands and the development of jsa itself.
   (18.7 added a column option, `pg_attver`, that older 18.x servers reject). `restore` and `doctor` check it.
 - `git`, for `jsa update`, `jsa version` and `jsa bisect`.
 - Optional: graphviz (`dot`) to draw the dependency graph of the report.
-- For the commands that run Odoo (coverage, `--neutralize`, `bisect`, ui tests with `-p`): the Odoo sources and a
+- For the commands that run Odoo (coverage, `--neutralize`, `bisect`, `mutation`): the Odoo sources and a
   Python environment able to run them, described as a profile in `config.toml`.
 
 **Install**
@@ -41,8 +40,7 @@ jsa works from any folder, but always reads its dumps in `dumps/` and writes its
 inside the toolbox folder.
 
 **What is where.** Everything in `jsa/` is the tool. Everything else at the root is yours or generated, and ignored by
-git: `config.toml`, `dumps/`, `plugins/` (your commands), `uitests/` (your ui tests and keywords),
-`codebase_analysis/` (reports).
+git: `config.toml`, `dumps/`, `plugins/` (your commands), `codebase_analysis/` (reports).
 
 **Updating.** `jsa update` pulls the toolbox folder and reinstalls jsa (needed when its dependencies change).
 `jsa version` tells which code runs and whether the remote has newer commits. To do it by hand:
@@ -56,7 +54,7 @@ git: `config.toml`, `dumps/`, `plugins/` (your commands), `uitests/` (your ui te
 
 **`[codebase]`**
 - `addons_roots`: the folders of your custom addons (OCA ones included if you want them in the report). Read by
-  `structure`, `pending-upgrades` and the ui tests' `--new-db`.
+  `structure`, `pending-upgrades` and `mutation`.
 
 **`[profiles.<name>]`**: one per Odoo installation, chosen with `-p <name>`.
 
@@ -88,7 +86,7 @@ standard one changes it rather than adding one: `enabled = false` switches it of
 mail servers step, `sql = "..."` replaces its SQL. So a `config.toml` that still holds copies of the standard steps
 (from before jsa 0.34) does the same as before, and its copies can be deleted.
 
-**`[uitests]`**: see [UI tests](#ui-tests). **`plugins_dirs`**: see [plugins](#your-own-commands-plugins).
+**`plugins_dirs`**: see [plugins](#your-own-commands-plugins).
 
 ## Databases
 
@@ -359,100 +357,6 @@ it exists in none of the commits searched: it comes from your checkout, committe
   left, the possible ones are listed.
 - Ctrl-C stops it cleanly: no database, worktree or temporary folder is left.
 
-## UI tests
-
-A proof of concept: acceptance tests that people who do not code can write, as lines of Odoo keywords, played in a
-real browser ([Robot Framework](https://robotframework.org) and its
-[Browser library](https://marketsquare.github.io/robotframework-browser/Browser.html)). Developed on Odoo 19.
-
-**Setup.** `jsa uitests setup` downloads Robot Framework and a browser (about 900 MB) into `uitests/.env`, and nothing
-else: jsa's own environment is not touched. The other `uitests` commands exist once it is done, and `jsa update`
-keeps it up to date. It ends by starting the browser once:
-- when the browser misses system libraries, it prints the `sudo apt install` to run;
-- on a company network that inspects HTTPS, the download is tried again with the certificates the computer trusts
-  (in WSL, those of Windows too); behind a proxy, set `HTTPS_PROXY` in your terminal first.
-
-Run it again to repair: it downloads what is missing. `jsa uitests remove` deletes it all (your tests are kept).
-
-**Writing a test.** A `.robot` file: a test is a name, then one keyword per line, its values separated by at least
-two spaces. A value written `name=value` fills the column or option called `name`.
-```robotframework
-*** Test Cases ***
-Confirm a quotation
-    Login As    admin
-    Open Menu    Sales / Orders / Quotations
-    Create Record
-    Set Field    Customer    Gemini Furniture
-    Add Line    Product=Office Chair    Quantity=2
-    Click Button    Confirm
-    Status Should Be    Sales Order
-```
-
-The basic keywords (`jsa uitests keywords` opens their list, with yours):
-
-| Keyword | |
-|---|---|
-| `Login As    user` | opens Odoo in a new browser and logs in |
-| `Open Menu    App / Menu / Submenu` | goes to a menu, written as in Odoo |
-| `Create Record` | the `New` button |
-| `Open Record    text` | opens the first record of the list showing `text` |
-| `Search For    text` | types in the search bar and presses Enter |
-| `Set Field    label    value` | fills a field: text, number, list of choices, record of another list, checkbox |
-| `Add Line    Column=value ...` | adds a line (order lines, invoice lines...) and fills its columns |
-| `Click Button    label` | a button of the page, or of the window opened on top of it |
-| `Save Record` | saves the form |
-| `Field Should Be    label    value` | checks a field of the form |
-| `Status Should Be    status` | checks the status at the top right of the form |
-| `Should See    text` | checks that `text` is written on the page |
-
-![The list of keywords](images/uitests_keywords.png)
-
-**Running.**
-- `jsa uitests run [tests]` plays them on a running Odoo (`--url`, default `[uitests] url`, else
-  `http://localhost:8069`; `--db` when it serves several databases).
-- `-p <profile> --db <db>`: jsa starts the Odoo of the profile on that database for the time of the tests.
-- `-p <profile> --new-db`: on a database made for the tests: your custom addons (all those of `addons_roots`, or
-  `[uitests] modules`) with demo data (`[uitests] demo = false` to go without). It is built once (minutes) as
-  `uitests_<profile>__template`, and each run starts from a fresh copy (seconds), so always from the same state. It is
-  built again when a custom addon, the list of modules or Odoo changes (`--rebuild` forces it). An addon that cannot be
-  installed is reported and left out. `--keep-db` keeps the database of the run to look at what the tests did.
-- `-w` shows the browser, slowed down, to watch the tests; `-o` opens the report at the end.
-- Users log in with the password of `[uitests] password` (default `admin`, what `jsa restore` sets).
-
-`jsa uitests report` opens the report of the last run: each step of each test, and a picture of the screen where a
-test failed.
-
-![A failed test in the report](images/uitests_log.png)
-![The screen when it failed](images/uitests_failure_screen.png)
-
-**Your tests.** `.robot` files in `uitests/tests/` (ignored by git, sub-folders allowed): once there is one, they are
-what `jsa uitests run` plays by default (otherwise the examples of `jsa/uitests/examples`). To keep them in a repository
-of yours, give its folder in `[uitests] tests`.
-
-**Your keywords.** The keyword files placed in `uitests/`, and in the folders of `[uitests] keywords_dirs` (e.g. a
-private repository), are usable in every test like the basic ones. Two kinds, each with an example to copy in
-`uitests/`:
-- `*.resource`: keywords made of other keywords, without programming (`example_keywords.resource.sample`). A keyword
-  with the name of a basic one replaces it, and can still call it (`OdooKeywords.Save Record`).
-- `*.py`: keywords written in Python (`example_keywords.py.sample`), with the toolkit of the basic keywords,
-  `from odoo_toolkit import odoo`:
-
-  | | |
-  |---|---|
-  | `odoo.run(name, *values)` | runs any keyword: basic, yours, or of the Browser library |
-  | `odoo.ready()` | waits until Odoo has finished what the last action started |
-  | `odoo.field(label)` | the field of the form with this label (its input, kind, value) |
-  | `odoo.expect(what, expected, read)` | checks a value, waiting a little for the screen to be up to date |
-  | `odoo.choose(selector, value)` | types in a field proposing records and picks the proposal |
-  | `odoo.selector(name)` | a selector of the screens of the tested Odoo version |
-  | `odoo.fail(message)` | fails the test with a message and a picture of the screen |
-
-  A file starting with `_` is a helper module, not a keyword file. Two Python keywords cannot have the same name.
-
-**Odoo versions.** Where the buttons and fields are depends on the version: `jsa/uitests/keywords/odoo_19.py`. Another
-version uses the nearest one, and `jsa uitests run` says so: copy it to `odoo_<version>.py` and adapt it. The
-enterprise home menu is handled, but the enterprise screens are less tested than the community ones.
-
 ## Your own commands (plugins)
 
 A plugin is a `*.py` file of `plugins/` (ignored by git) with a `register(app)` function, like jsa's own features:
@@ -491,7 +395,6 @@ The examples:
 
 Used daily on Odoo 19, tested on 17 and 19; 18 and later versions should work, nothing being tied to a version number
 except:
-- the screens of the ui tests (`jsa/uitests/keywords/odoo_<version>.py`, see above);
 - `quote-pdfs`: Odoo 18 and later; `restore --neutralize`: Odoo 16 and later (both say so otherwise);
 - demo data, loaded by default up to Odoo 18 and on request from 19: the coverage and test databases always get it.
 
@@ -505,7 +408,6 @@ except:
 | `core/` | config, PostgreSQL, addons on disk, running Odoo, plugins, terminal output (no command) |
 | `db/` | restore, databases, modules |
 | `structure/` | codebase report, coverage, bisect |
-| `uitests/` | ui test commands; `keywords/` and `examples/` are what Robot Framework runs |
 | `doctor.py`, `self_update.py` | `doctor`, `version`, `update` |
 
 A feature never imports another one: what two of them share goes in `core/`.

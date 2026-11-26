@@ -192,9 +192,9 @@ def test_installed_matches_repo(tmp_path):
         for package in (d, d / "db"):
             (package / "__init__.py").write_text("")
         (d / "db" / "restore.py").write_text("v1")
-    # what Robot Framework runs is not code jsa imports: a non-editable install does not have it
-    (repo / "uitests" / "keywords").mkdir(parents=True)
-    (repo / "uitests" / "keywords" / "OdooKeywords.py").write_text("keywords")
+    # a .py outside the packages is not code jsa imports: a non-editable install does not have it
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "scripts" / "tool.py").write_text("script")
     assert self_update.installed_matches_repo(installed, repo)
     (repo / "db" / "restore.py").write_text("v2")  # git pull brought new code, the copy install still runs v1
     assert not self_update.installed_matches_repo(installed, repo)
@@ -205,6 +205,25 @@ def test_installed_matches_repo(tmp_path):
     assert self_update.code_differences(installed, repo) == [
         "1 file(s) not in the folder anymore (old_module.py)", "1 file(s) missing (db/new_module.py)",
         "1 file(s) different (db/restore.py)"]
+
+
+@pytest.mark.skipif(OLD_TYPER, reason="needs the typer version asked by pyproject.toml")
+def test_update_from_a_jsa_with_ui_tests(tmp_path, monkeypatch):
+    # 'jsa update' of jsa 0.35 and older ends with 'jsa uitests sync', run by the new code: hidden, it cleans up what
+    # the setup of the ui tests downloaded, keeps the files written there, never fails
+    monkeypatch.setattr(self_update.config, "TOOLBOX_DIR", tmp_path)
+    app, runner, folder = typer.Typer(), CliRunner(), tmp_path / "uitests"
+    self_update.register(app)
+    assert "uitests" not in runner.invoke(app, ["--help"]).output
+    assert runner.invoke(app, ["uitests", "sync"]).output == ""  # never set up: nothing to say
+    for sub in (".env/bin", "results", "__pycache__", "tests"):
+        (folder / sub).mkdir(parents=True)
+    (folder / "tests" / "sales.robot").write_text("*** Test Cases ***")
+    result = runner.invoke(app, ["uitests", "sync"])
+    assert result.exit_code == 0 and "1 file(s) of yours stay" in result.output
+    assert [p.name for p in folder.iterdir()] == ["tests"]
+    (folder / "tests" / "sales.robot").unlink()
+    assert runner.invoke(app, ["uitests", "sync"]).exit_code == 0 and not folder.exists()
 
 
 def test_open_command(monkeypatch, tmp_path):

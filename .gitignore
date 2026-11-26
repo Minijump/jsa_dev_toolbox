@@ -1,4 +1,4 @@
-# yours: configuration, dumps, private commands and private ui test keywords
+# yours: configuration, dumps, private commands
 config.toml
 dumps/*
 !dumps/README.md
@@ -14,8 +14,8 @@ plugins/quote_pdfs/*
 plugins/backfill/*
 !plugins/backfill/__init__.py
 !plugins/backfill/*.sample
-uitests/*
-!uitests/*.sample
+# the ui tests left jsa in 0.36: the tests and keywords you wrote in uitests/ stay out of git
+uitests/
 reviewed.toml
 roadmap_internal.md
 
