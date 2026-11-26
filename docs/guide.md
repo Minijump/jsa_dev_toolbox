@@ -161,6 +161,8 @@ then the other applications and modules. Useful before moving a database to the 
 ## Codebase report and test coverage
 
 `jsa structure` writes `codebase_analysis/report.html`, a single page that works offline (`jsa report` opens it).
+From the top: the tiles, what needs attention, the detailed sections (folded, each with a one-line summary of what
+it holds and what changed: a click opens one), then the table of the addons and the dependency graph.
 
 ![Overview of the report](images/report_overview.png)
 
@@ -168,12 +170,19 @@ then the other applications and modules. Useful before moving a database to the 
   line, and each direction of each `if`, of the code inside functions run by the tests: see below), tests, addons
   that cannot be installed, dependencies on Odoo enterprise; the measures per module, with the whole one under them
   (see "Measuring the coverage"), and their change since the last run.
-- **Needs attention**, **changes since the previous run**, the **dependencies on Odoo enterprise** (direct, and through
-  another custom addon).
-- **Security review**: the places of your code to look at, below.
-- **A table of the addons**, sortable and filterable (its coverage per module, then whole); a click opens the
-  failed tests (alone and with all the addons), the lines not covered, the dependencies and who uses the addon. A column counts its security findings to review; once `jsa mutation` measured
-  it, another gives its mutation score (below).
+- **Needs attention**, open: what got worse since the previous report, tagged *new* and first (tests failing now,
+  per module or with all the addons; an addon that does not install anymore; coverage going down, per addon and in
+  total; new security findings; new changes no test notices, from `jsa mutation`; a new dependency on Odoo
+  enterprise; a new addon without tests), then what is still to fix, and in one line what got better (tests fixed,
+  coverage up, findings gone). A link opens its section. "The previous report" is the last one where something
+  changed: a report made again without any change (`jsa mutation`, `jsa structure` without `-c`) keeps saying the same.
+- **Detailed sections**, folded: the trends, the security review, mutation testing, the dependencies on Odoo
+  enterprise (direct, and through another custom addon; the new ones tagged), the tests of the standard modules.
+- **A table of the addons**, sortable and filterable: coverage per module (its change since the previous report)
+  then whole, the mutation scores once `jsa mutation` measured the addon, one column for the tests (passed, or how
+  many failed and how many of them since the previous report, the whole run when it differs), lines of code,
+  enterprise dependencies, security findings to review (+ the new ones). A new addon is tagged. A click opens the
+  failed tests (alone and with all the addons), the lines not covered, the dependencies and who uses the addon.
 
 ![Table of the addons](images/report_table.png)
 
@@ -351,9 +360,11 @@ report: "If `move._post()` is removed, no test fails". Meant for your critical a
   (the report says how many). Some changes cannot matter at all (a fast and a slow path giving the same result): in
   the prototype, about 3 in 100; when one is listed, copy its lines into `reviewed.toml` and say why in `reason`
   (`[[mutation]]`, like the security review): it is shown folded.
-- In the report: a section per addon (its score: the share of the changes reached that a test noticed; the changes
-  not noticed, by function; its score run after run), and a "Mutation" column in the table. "Not reached by any test"
-  is the coverage's job: those are only counted.
+- In the report: a fold per addon with its two scores, of the changes reached (the share of the changes its tests
+  run that a test noticed: how well they check what they run) and of all its changes (those in code no test runs count
+  as not noticed: what other tools call the mutation score); the changes not noticed, by function, those new since its
+  previous `jsa mutation` first and tagged; both scores run after run. The table shows both too. "Not reached by any
+  test" is the coverage's job.
 
 ![Mutation testing](images/report_mutation.png)
 

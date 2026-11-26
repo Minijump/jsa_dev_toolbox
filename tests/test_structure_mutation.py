@@ -157,7 +157,7 @@ RESULT = {
     "left_out": ["TestX.test_flaky"],
     "mutants": [
         {"id": "aaaaaaaaaa", "file": "models/sale.py", "line": 21, "function": "Sale.compute", "op": "remove call",
-         "original": "self.write({'state': 'done'})", "mutated": "", "status": "survived", "killers": []},
+         "original": "self.write({'state': 'done'})", "mutated": "", "status": "survived", "killers": [], "new": True},
         {"id": "bbbbbbbbbb", "file": "models/sale.py", "line": 13, "function": "Sale.compute", "op": "comparison",
          "original": "qty > 10", "mutated": "qty <= 10", "status": "survived", "killers": [], "checked": True},
         {"id": "cccccccccc", "file": "models/sale.py", "line": 14, "function": "Sale.compute", "op": "arithmetic",
@@ -171,6 +171,7 @@ RESULT = {
 def test_the_report_lists_the_changes_no_test_notices(tmp_path):
     assert report_html.mutation_counts(RESULT) == {"killed": 1, "survived": 2, "not reached": 1}
     assert report_html.mutation_score(RESULT) == 33 and report_html.mutation_score({"mutants": []}) is None
+    assert report_html.mutation_score_all(RESULT) == 25  # 1 noticed of the 4: the one not reached counts too
     (tmp_path / "mutation").mkdir()
     (tmp_path / "mutation" / "my_addon.json").write_text(json.dumps(RESULT))
     (tmp_path / "mutation" / "my_addon_odoo.log").write_text("not json")
@@ -179,13 +180,17 @@ def test_the_report_lists_the_changes_no_test_notices(tmp_path):
     report.write_reports({"my_addon": 40, "other": 5}, {"my_addon": ["base"], "other": []}, results, tmp_path,
                          reviewed_changes={"bbbbbbbbbb": "the boundary has its own test elsewhere"})
     page = (tmp_path / "report.html").read_text(encoding="utf-8")
-    section = page[page.index('<section id="mutation">'):page.index("</section>", page.index('<section id="mutation">'))]
-    assert "<h2>Untested behaviour: mutation testing (1 change(s) not noticed)</h2>" in section
-    assert "my_addon · 33% of the changes reached noticed" in section
+    section = page[page.index('<details class="part" id="mutation">'):page.index('<h2>Addons')]
+    assert ('<h2>Mutation testing: untested behaviour</h2><span class="psum">1 change(s) no test notices '
+            '(<span class="neg">+1 new</span>) · 1 addon(s)</span>') in section
+    assert '<span class="rkind">33% of the changes reached · 25% of all</span>' in section
+    assert section.index('<span class="tag">new</span><strong>Sale.compute</strong>') < section.index("Reviewed (1)")
+    assert '<a href="#mutation">1 new change(s) no test notices</a>: my_addon (1)' in page  # in what needs attention
     assert "If <code>self.write({&#x27;state&#x27;: &#x27;done&#x27;})</code> is removed, no test fails." in section
     assert "Reviewed: the boundary has its own test elsewhere" in section and "checked by a real install" in section
     assert "1 browser test(s) (tours) not run" in section and "<code>TestX.test_flaky</code>" in section
-    assert section.count('<button class="copy"') == 1 and 'aria-label="Score of my_addon"' in section  # two runs: a chart
+    assert section.count('<button class="copy"') == 1 and 'aria-label="Scores of my_addon"' in section  # two runs: a chart
+    assert '<polyline class="l1"' in section  # of the changes reached, of all: two lines
     entry = report_html.mutation_entry("my_addon", RESULT["mutants"][0])
     assert entry.startswith('[[mutation]]\nid = "aaaaaaaaaa"  # my_addon/models/sale.py:21 | Sale.compute | remove call\n')
     assert 'data-key="mutation"' in page and 'data-mutation="33"' in page and 'data-mutation="-1"' in page
@@ -213,3 +218,13 @@ def test_mutation_needs_linux_and_addons(monkeypatch, capsys):
     with pytest.raises(typer.Exit):
         mutation.mutation(None, "19", 0, False)
     assert "Which addons?" in capsys.readouterr().out
+
+
+def test_a_change_no_test_notices_anymore_is_new():
+    previous = {"mutants": [{"id": "a", "status": "survived"}, {"id": "b", "status": "killed"}]}
+    mutants = [{"id": "a", "status": "survived"}, {"id": "b", "status": "survived"}, {"id": "c", "status": "killed"}]
+    mutation.mark_new(mutants, previous)
+    assert [m.get("new") for m in mutants] == [None, True, None]  # b: noticed before, not anymore
+    first = [{"id": "a", "status": "survived"}]
+    mutation.mark_new(first, {})
+    assert "new" not in first[0]  # a first measure: nothing to compare with

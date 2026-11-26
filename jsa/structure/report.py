@@ -42,13 +42,14 @@ def build_state(loc: dict, dependencies: dict, results: dict[str, Optional[Resul
     return state
 
 
-def load_state(out_dir: Path) -> tuple[dict, Optional[str]]:
-    """Return (state, date of the run) of the previous run, ({}, None) if there is none."""
+def load_state(out_dir: Path, key: str = 'addons') -> tuple[dict, Optional[str]]:
+    """Return (state, date of the run) of the previous run, ({}, None) if there is none. key='baseline': the state
+    that report compared itself with (see write_reports)."""
     try:
         raw = json.loads((out_dir / STATE_FILE).read_text(encoding='utf-8'))
     except (FileNotFoundError, json.JSONDecodeError):
         return {}, None
-    return raw.get('addons', {}), raw.get('generated_at')
+    return raw.get(key) or {}, raw.get('generated_at' if key == 'addons' else f'{key}_date')
 
 
 def status(entry: dict) -> str:
@@ -142,6 +143,8 @@ def compute_diff(old: dict, new: dict) -> dict:
         'not_comparable': [],  # addons measured by another version of jsa: their measures are not compared
         'could_to_cant': [], 'cant_to_could': [],
         'newly_failing': [],  # (addon, tests failing now but not before)
+        'newly_failing_whole': [],  # (addon, tests failing with all the addons now, not before, and passing alone)
+        'whole_could_to_cant': [],  # addons installable alone that cannot be installed with all the addons anymore
         'fixed': [],  # (addon, tests that failed before and not anymore)
         'metrics_changed': [],  # (addon, loc change, coverage change or None, old coverage, new coverage)
         'deps_changed': [],  # (addon, added dependencies, removed dependencies)
@@ -174,6 +177,13 @@ def compute_diff(old: dict, new: dict) -> dict:
                 diff['newly_failing'].append((name, newly))
             if fixed := [t for t in old_failed if t not in new_failed]:
                 diff['fixed'].append((name, fixed))
+            old_whole, new_whole = before.get('whole') or {}, after.get('whole') or {}
+            if old_whole and new_whole and new_cov != NOT_INSTALLABLE:
+                if old_whole.get('coverage') != NOT_INSTALLABLE and new_whole.get('coverage') == NOT_INSTALLABLE:
+                    diff['whole_could_to_cant'].append(name)
+                if newly := [t for t in new_whole.get('failed') or []
+                             if t not in (old_whole.get('failed') or []) and t not in new_failed]:
+                    diff['newly_failing_whole'].append((name, newly))
         old_deps, new_deps = set(before.get('depends') or []), set(after.get('depends') or [])
         if old_deps != new_deps:
             diff['deps_changed'].append((name, sorted(new_deps - old_deps), sorted(old_deps - new_deps)))
@@ -338,10 +348,15 @@ def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Res
     reviewed, security_off = reviewed or {}, security_off or []
     out_dir.mkdir(parents=True, exist_ok=True)
     old, old_date = load_state(out_dir)
-    before = security_ids(old)  # a rule switched off since: its findings are not "gone"
-    before = None if before is None else {i: rule for i, rule in before.items() if rule not in security_off}
     standard_tests = load_standard_tests(out_dir)
     new = build_state(loc, dependencies, results, extra)
+    # what is new is said against the previous report; when nothing changed since, against the report it compared
+    # itself with: a report made again without measuring (jsa mutation, without -c) keeps showing what changed
+    if old and json.loads(json.dumps(new)) == old:
+        base, base_date = load_state(out_dir, 'baseline')
+        old, old_date = (base, base_date) if base else (old, old_date)
+    before = security_ids(old)  # a rule switched off since: its findings are not "gone"
+    before = None if before is None else {i: rule for i, rule in before.items() if rule not in security_off}
     now = datetime.now().isoformat(timespec='seconds')
     if standard is not None:
         standard_tests = {'date': now, 'modules': standard}
@@ -366,7 +381,8 @@ def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Res
                                'reviewed_changes': reviewed_changes or {}, 'security_off': security_off})
     (out_dir / REPORT_FILE).write_text(html, encoding='utf-8')
     (out_dir / STATE_FILE).write_text(json.dumps({'schema': SCHEMA, 'generated_at': now, 'addons': new,
-                                                  'standard_tests': standard_tests}, indent=1), encoding='utf-8')
+                                                  'standard_tests': standard_tests, 'baseline': old,
+                                                  'baseline_date': old_date}, indent=1), encoding='utf-8')
     whole = lambda key, text: f" ({text.format(summary[key])} whole)" if summary.get(key) is not None else ""
     coverage = (f"{summary['coverage']:.0f}% coverage per module" + whole('coverage_whole', "{:.0f}%")
                 if summary['coverage'] is not None else "coverage not measured")

@@ -7,6 +7,7 @@ Coverage is a continuous color from red (0%) to green (100%). States use a symbo
 """
 import json
 import math
+from collections import Counter
 from datetime import datetime
 from html import escape as E
 from typing import Optional
@@ -131,7 +132,15 @@ details.rule>summary:hover .rname{color:var(--accent)}
 .rname{font-weight:600}.rkind{color:var(--ink2);font-size:13px}.rcount{font-variant-numeric:tabular-nums}
 details.rule>p{color:var(--ink2);margin:4px 0 6px 22px;max-width:900px}details.rule>ul.findings{margin-left:22px}
 details.reviewed{margin:0 0 10px 22px}details.reviewed>summary{cursor:pointer}
-.mutated h3{font-size:14px;margin:16px 0 4px}#mutation details>summary{cursor:pointer;margin-top:8px}
+details.rule.mutated>summary{grid-template-columns:10px minmax(180px,320px) 340px 1fr}.mbody{margin-left:22px}
+details.part{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:0 18px;margin-bottom:16px}
+details.part>summary{display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;padding:14px 0;cursor:pointer;list-style:none}
+details.part>summary::-webkit-details-marker{display:none}
+details.part>summary::before{content:"▸";color:var(--muted)}details.part[open]>summary::before{content:"▾"}
+details.part>summary h2{margin:0}details.part>summary:hover h2{color:var(--accent)}
+.psum{color:var(--ink2)}.pbody{padding:0 0 16px}
+a{color:var(--accent)}
+.whole.bad{color:var(--serious)}
 footer{color:var(--muted);font-size:12px;margin-top:8px}
 """
 
@@ -231,6 +240,10 @@ document.querySelectorAll('button.copy').forEach(btn => btn.addEventListener('cl
   };
   if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, byHand); else byHand();
 }));
+// ----- the sections that fold: a link to one (#security) opens it
+const openPart = id => { const d = id && document.getElementById(id); if (d && d.tagName === 'DETAILS') d.open = true; };
+document.addEventListener('click', e => { const a = e.target.closest('a[href^="#"]'); if (a) openPart(a.getAttribute('href').slice(1)); });
+window.addEventListener('hashchange', () => openPart(location.hash.slice(1))); openPart(location.hash.slice(1));
 // a chart zoomed on its values (at first) or from 0
 document.querySelectorAll('details.trend button.axis').forEach(btn => btn.addEventListener('click', () => {
   const section = btn.closest('details.trend'), from0 = section.classList.toggle('from0');
@@ -282,10 +295,12 @@ def _percent(measure: dict) -> Optional[str]:
     return f"{coverage}%" if isinstance(coverage, int) and coverage >= 0 else None
 
 
-def _coverage_html(entry: dict) -> str:
-    """The coverage per module (a meter), then the whole one."""
+def _coverage_html(entry: dict, change: Optional[int] = None) -> str:
+    """The coverage per module (a meter, its change since the report compared with), then the whole one."""
     coverage, whole = entry.get('coverage'), _percent(entry.get('whole') or {})
     whole = f'<span class="whole" title="With all the addons installed and tested together">whole {whole}</span>' if whole else ""
+    change = (f' <span class="{"pos" if change > 0 else "neg"}" title="Since the report compared with">{change:+d}</span>'
+              if change else "")
     if coverage == NOT_INSTALLABLE and entry.get('statements'):
         return '<span class="muted" title="Its tests never ran: counted as 0% in the total">0%</span>' + whole
     if coverage is None or coverage == NOT_INSTALLABLE:
@@ -293,20 +308,35 @@ def _coverage_html(entry: dict) -> str:
     if coverage == NO_REPORT:
         return '<span class="muted">no python code</span>'
     return (f'<span class="cov"><span class="meter"><span style="width:{coverage}%;background:{coverage_color(coverage)}"></span>'
-            f'</span>{coverage}%</span>{whole}')
+            f'</span>{coverage}%{change}</span>{whole}')
 
 
-def _tests_html(entry: dict) -> str:
-    if report.status(entry) in ('not_measured', 'not_installable'):
-        return '–'
-    tests, failed = entry.get('tests') or 0, len(entry.get('failed') or [])
-    alone, together = entry.get('failed') or [], (entry.get('whole') or {}).get('failed')
-    # whole: said when it differs (a test failing only with all the addons, or passing only with them)
-    whole = (f'<span class="whole" title="With all the addons installed and tested together">whole: {len(together)} failed</span>'
-             if together is not None and sorted(together) != sorted(alone) else '')
-    if not tests:
-        return 'no tests' + whole
-    return f'{tests - failed} passed' + (f' · <span class="st serious"><b>⚠</b>{failed} failed</span>' if failed else '') + whole
+def _tests_html(entry: dict, newly: int = 0) -> str:
+    """Status, tests and failures in one cell (the user, 2026-11-26: they were in three columns): per module, `newly`
+    failing since the report compared with, then the whole run when it differs."""
+    status = report.status(entry)
+    if status == 'not_measured':
+        return '<span class="st muted"><b>–</b>not measured</span>'
+    if status == 'not_installable':
+        return '<span class="st critical"><b>✖</b>not installable</span>'
+    tests, failed, whole = entry.get('tests') or 0, entry.get('failed') or [], entry.get('whole') or {}
+    together = whole.get('failed')
+    if whole.get('coverage') == NOT_INSTALLABLE:
+        line = 'whole: not installable'
+    elif together is not None and sorted(together) != sorted(failed):
+        line = f'whole: {len(together)} failed'  # a test failing only with all the addons, or passing only with them
+    else:
+        line = ''
+    line = (f'<span class="whole{" bad" if status == "failing" and not failed else ""}" title="With all the addons '
+            f'installed and tested together">{line}</span>') if line else ''
+    if failed:
+        main = (f'<span class="st serious"><b>⚠</b>{len(failed)} of {tests} failed</span>'
+                + (f' <span class="neg" title="Failing since the report compared with">+{newly}</span>' if newly else ''))
+    elif tests:
+        main = f'<span class="st good"><b>✔</b>{tests} passed</span>'
+    else:
+        main = '<span class="st muted"><b>○</b>no tests</span>'
+    return main + line
 
 
 def _tip(entry: dict) -> str:
@@ -368,27 +398,86 @@ def _tiles(summary: dict, old: Optional[dict], earlier: list[dict] = ()) -> str:
         for label, value, lines, *tip in tiles) + '</div>'
 
 
-def _attention(state: dict, standard: Optional[dict] = None) -> str:
-    items = []
-    for name, entry in state.items():
-        if report.status(entry) == 'not_installable':
-            items.append(f'<li>{_status_html("not_installable")} <strong>{E(name)}</strong>: {E(entry.get("note") or "could not be installed")}</li>')
-    for name, entry in state.items():
-        if report.status(entry) == 'failing':
-            whole, failed = entry.get('whole') or {}, entry.get('failed') or []
-            parts = [", ".join(f"<code>{E(t)}</code>" for t in failed)] if failed else []
+def _part(key: str, title: str, summary: str, body: str, is_open: bool = False) -> str:
+    """A section of the page that folds (the user, 2026-11-26: what needs attention on top, then the detailed
+    sections, each folded with a summary of its content; the table and the graph stay open). A link to #key opens it."""
+    return (f'<details class="part" id="{key}"{" open" if is_open else ""}><summary><h2>{E(title)}</h2>'
+            f'<span class="psum">{summary}</span></summary><div class="pbody">{body}</div></details>')
+
+
+def _attention(state: dict, summary: dict, old_summary: Optional[dict], diff: Optional[dict], since: Optional[str],
+               standard: Optional[dict] = None, findings: tuple = ({}, 0), survivors: Optional[dict] = None) -> str:
+    """Needs attention, on top and open: what got worse since the report compared with (tagged new, first), then
+    what is still wrong, and what got better in one line. `findings`: ({rule title: count} of the security findings
+    new since then and not reviewed, how many are gone); `survivors`: {addon: count} of the changes no test notices,
+    new since the previous 'jsa mutation' of that addon and not reviewed. The sections below and the table say more."""
+    diff, new = diff or {}, '<span class="tag">new</span>'
+    names = lambda tests, fresh=(): ", ".join(f"{new if t in fresh else ''}<code>{E(t)}</code>" for t in tests)
+    newly, newly_whole = dict(diff.get('newly_failing', [])), dict(diff.get('newly_failing_whole', []))
+    broken = set(diff.get('could_to_cant', [])) | set(diff.get('added', []))
+    items = []  # (something new in it, html)
+    for name, entry in sorted(state.items()):
+        status, whole = report.status(entry), entry.get('whole') or {}
+        if status == 'not_installable':
+            items.append((name in broken, f'{_status_html("not_installable")} {new if name in broken else ""}'
+                                          f'<strong>{E(name)}</strong>: {E(entry.get("note") or "could not be installed")}'))
+        elif status == 'failing':
+            failed, fresh_whole = entry.get('failed') or [], name in diff.get('whole_could_to_cant', [])
+            parts = [names(failed, newly.get(name, []))] if failed else []
             if whole.get('coverage') == NOT_INSTALLABLE:
-                parts.append(f"cannot be installed with all the addons ({E(whole.get('note') or 'see the log')})")
+                parts.append(f"{new if fresh_whole else ''}cannot be installed with all the addons "
+                             f"({E(whole.get('note') or 'see the log')})")
             elif only := [t for t in whole.get('failed') or [] if t not in failed]:
-                parts.append("with all the addons (whole): " + ", ".join(f"<code>{E(t)}</code>" for t in only))
-            items.append(f'<li>{_status_html("failing")} <strong>{E(name)}</strong>: {"; ".join(parts)}</li>')
+                parts.append("with all the addons (whole): " + names(only, newly_whole.get(name, [])))
+            items.append((bool(newly.get(name) or newly_whole.get(name) or fresh_whole),
+                          f'{_status_html("failing")} <strong>{E(name)}</strong>: {"; ".join(parts)}'))
+    down = '<span class="st critical"><b>▼</b>Coverage down</span>'
+    for key, label in (('coverage', 'per module'), ('coverage_whole', 'whole')):
+        was, now = (old_summary or {}).get(key), summary.get(key)
+        if was is not None and now is not None and now < was - 0.05 and not diff.get('not_comparable'):
+            items.append((True, f'{down} {new}in total, {label}: {was:.1f}% → {now:.1f}% '
+                                f'(<span class="neg">{now - was:+.1f} pts</span>)'))
+    for name, _, change, was, now in diff.get('metrics_changed', []):
+        if change and change < 0:
+            items.append((True, f'{down} {new}<strong>{E(name)}</strong>: {was}% → {now}% '
+                                f'(<span class="neg">{change:+d} pts</span>)'))
+    fresh_findings, gone_findings = findings
+    if fresh_findings:
+        items.append((True, f'<span class="st serious"><b>⚠</b>Security review</span> {new}<a href="#security">{sum(fresh_findings.values())} new security finding(s) to '
+                            'review</a>: ' + ", ".join(f"{E(title)} ({n})" for title, n in fresh_findings.items())))
+    if survivors:
+        items.append((True, f'<span class="st serious"><b>⚠</b>Mutation testing</span> {new}<a href="#mutation">{sum(survivors.values())} new change(s) no test notices</a>: '
+                            + ", ".join(f"{E(addon)} ({n})" for addon, n in sorted(survivors.items()))))
+    for name, modules in diff.get('enterprise_added', []):
+        items.append((True, f'<span class="st ent"><b>◆</b></span>{new}<strong>{E(name)}</strong> now depends on Odoo '
+                            f'enterprise: {E(", ".join(modules))}'))
+    for name in diff.get('added', []):
+        if report.status(state.get(name, {})) == 'no_tests':
+            items.append((True, f'{_status_html("no_tests")} {new}<strong>{E(name)}</strong>: a new addon without tests'))
     for module, result in sorted(((standard or {}).get('modules') or {}).items()):
         if result['failed']:
-            tests = ", ".join(f"<code>{E(t)}</code>" for t in result['failed'])
-            items.append(f'<li>{_status_html("failing")} <strong>{E(module)}</strong> (standard module, with your addons): {tests}</li>')
-    if not items:
-        return ""
-    return f'<section><h2>Needs attention ({len(items)})</h2><ul>{"".join(items)}</ul></section>'
+            items.append((False, f'{_status_html("failing")} <strong>{E(module)}</strong> (standard module, with your '
+                                 f'addons): {names(result["failed"])}'))
+    better = []
+    if diff.get('fixed'):
+        better.append(f"{sum(len(t) for _, t in diff['fixed'])} test(s) fixed ({E(', '.join(n for n, _ in diff['fixed']))})")
+    if diff.get('cant_to_could'):
+        better.append("installable again: " + E(", ".join(diff['cant_to_could'])))
+    if up := [(n, c) for n, _, c, *_ in diff.get('metrics_changed', []) if c and c > 0]:
+        better.append("coverage up: " + ", ".join(f"{E(n)} +{c} pts" for n, c in up))
+    if gone_findings:
+        better.append(f"{gone_findings} security finding(s) gone")
+    items.sort(key=lambda item: not item[0])  # what is new first
+    fresh = sum(1 for is_new, _ in items if is_new)
+    when = f"since the report of {E(since[:16].replace('T', ' '))}" if since and diff else ""
+    told = ([f'<span class="neg">{fresh} new</span>'] if fresh else [f"nothing new"] if when else []) + (
+        [f"{len(items) - fresh} still to fix"] if len(items) > fresh else [])
+    body = (f'<ul>{"".join(f"<li>{html}</li>" for _, html in items)}</ul>' if items else
+            '<p class="meta" style="margin:0">Nothing needs attention.</p>')
+    if better:
+        body += f'<p class="meta" style="margin:10px 0 0"><span class="pos">Better</span> {when}: {"; ".join(better)}.</p>'
+    return _part('attention', 'Needs attention', (" · ".join(told) or "nothing") + (f" ({when})" if when else ""),
+                 body, is_open=True)
 
 
 def _standard(standard: Optional[dict]) -> str:
@@ -398,69 +487,37 @@ def _standard(standard: Optional[dict]) -> str:
     modules = standard.get('modules') or {}
     tests, failed = sum(r['tests'] for r in modules.values()), sum(len(r['failed']) for r in modules.values())
     when = E(standard.get('date', '')[:16].replace('T', ' '))
-    failing = [m for m, r in sorted(modules.items()) if r['failed']]
-    body = (f"{tests:,} tests in {len(modules)} standard modules, run with your addons installed ({when}): "
-            + (f'<span class="st serious"><b>⚠</b>{failed} failed</span> in {E(", ".join(failing))}' if failed else "all passed"))
-    return f'<section><h2>Tests of the standard modules</h2><span class="meta">{body}</span></section>'
+    failing = {module: r['failed'] for module, r in sorted(modules.items()) if r['failed']}
+    summary = (f"{tests:,} tests in {len(modules)} standard modules, "
+               + (f'<span class="neg">{failed} failed</span>' if failed else "all passed") + f" ({when})")
+    body = ('<p class="meta" style="margin:0 0 8px">Run with your addons installed, like odoo.sh '
+            '(<code>jsa structure -c --standard-tests</code>).</p>'
+            + ('<ul>' + "".join(f"<li><strong>{E(module)}</strong>: " + ", ".join(f"<code>{E(t)}</code>" for t in tests)
+                                + "</li>" for module, tests in failing.items()) + '</ul>' if failing else ''))
+    return _part('standard', 'Tests of the standard modules', summary, body)
 
 
-def _enterprise(enterprise: dict[str, dict[str, list[str]]]) -> str:
-    """Which Odoo enterprise modules the custom addons need: the work to do to run on the community edition."""
+def _enterprise(enterprise: dict[str, dict[str, list[str]]], added: Optional[dict] = None) -> str:
+    """Which Odoo enterprise modules the custom addons need: the work to do to run on the community edition.
+    `added`: {addon: the enterprise modules it depends on directly since the report compared with}."""
     if not enterprise:
         return ""
+    added = added or {}
     direct, indirect = {}, {}
     for addon, modules in enterprise.items():
         for module, via in modules.items():
             (indirect if via else direct).setdefault(module, []).append(addon)
+    tag = lambda addon, module: '<span class="tag">new</span>' if module in added.get(addon, []) else ''
     rows = "".join(
-        f'<tr><td><span class="st ent"><b>◆</b>{E(module)}</span></td><td>{E(", ".join(sorted(direct[module])))}</td>'
+        f'<tr><td><span class="st ent"><b>◆</b>{E(module)}</span></td>'
+        f'<td>{", ".join(tag(addon, module) + E(addon) for addon in sorted(direct[module]))}</td>'
         f'<td>{E(", ".join(sorted(indirect.get(module, [])))) or "–"}</td></tr>' for module in sorted(direct))
-    return (f'<section><h2>Dependencies on Odoo enterprise ({len(direct)} modules, {len(enterprise)} addons)</h2>'
-            '<p class="meta" style="margin:0 0 8px">⚠ These addons would not work on the community edition of Odoo.</p>'
-            '<table class="plain"><thead><tr><th>Enterprise module</th><th>Custom addons depending on it</th>'
-            f'<th>Addons needing it through another custom addon</th></tr></thead><tbody>{rows}</tbody></table></section>')
-
-
-def _changes(diff: Optional[dict], old_date: Optional[str]) -> str:
-    if diff is None:
-        return ""
-    def names(pairs):
-        return "; ".join(f"<strong>{E(n)}</strong> ({', '.join(f'<code>{E(t)}</code>' for t in tests)})" for n, tests in pairs)
-
-    items = []
-    if diff['could_to_cant']:
-        items.append(f"✖ Not installable anymore: <strong>{E(', '.join(diff['could_to_cant']))}</strong>")
-    if diff['newly_failing']:
-        items.append(f"⚠ Tests failing now: {names(diff['newly_failing'])}")
-    if diff['cant_to_could']:
-        items.append(f"✔ Installable again: <strong>{E(', '.join(diff['cant_to_could']))}</strong>")
-    if diff['fixed']:
-        items.append(f"✔ Tests fixed: {names(diff['fixed'])}")
-    if diff.get('enterprise_added'):
-        items.append("◆ New dependencies on Odoo enterprise: " + "; ".join(
-            f"<strong>{E(n)}</strong> ({E(', '.join(modules))})" for n, modules in diff['enterprise_added']))
-    if diff['added']:
-        items.append(f"New addons: <strong>{E(', '.join(diff['added']))}</strong>")
-    if diff['removed']:
-        items.append(f"Removed addons: <strong>{E(', '.join(diff['removed']))}</strong>")
-    for name, loc, cov, old_cov, new_cov in diff['metrics_changed']:
-        parts = []
-        if loc:
-            parts.append(f"{loc:+,} lines")
-        if cov:
-            parts.append(f'coverage {old_cov}% → {new_cov}% (<span class="{"pos" if cov > 0 else "neg"}">{cov:+d} pts</span>)')
-        items.append(f"<strong>{E(name)}</strong>: {', '.join(parts)}")
-    for name, added, removed in diff['deps_changed']:
-        parts = ([f"now depends on {E(', '.join(added))}"] if added else []) + ([f"no longer depends on {E(', '.join(removed))}"] if removed else [])
-        items.append(f"<strong>{E(name)}</strong>: {'; '.join(parts)}")
-    since = f" ({E(old_date[:16].replace('T', ' '))})" if old_date else ""
-    body = f'<ul>{"".join(f"<li>{i}</li>" for i in items)}</ul>' if items else ""
-    if diff.get('not_comparable'):
-        count = len(diff['not_comparable'])
-        body += (f'<p class="meta">Coverage and tests of {count} addon{"s" if count > 1 else ""} not compared: measured by '
-                 'another version of jsa than in the previous run.</p>')
-    body = body or '<span class="meta">Nothing changed.</span>'
-    return f'<section><h2>Changes since the previous run{since}</h2>{body}</section>'
+    count = sum(len(modules) for modules in added.values())
+    summary = f"{len(direct)} modules, {len(enterprise)} addons" + (f' (<span class="neg">+{count} new</span>)' if count else "")
+    return _part('enterprise', 'Dependencies on Odoo enterprise', summary,
+                 '<p class="meta" style="margin:0 0 8px">⚠ These addons would not work on the community edition of Odoo.</p>'
+                 '<table class="plain"><thead><tr><th>Enterprise module</th><th>Custom addons depending on it</th>'
+                 f'<th>Addons needing it through another custom addon</th></tr></thead><tbody>{rows}</tbody></table>')
 
 
 def _detail(name: str, entry: dict, state: dict, used_by: list[str], enterprise: dict[str, list[str]]) -> str:
@@ -490,14 +547,23 @@ def _detail(name: str, entry: dict, state: dict, used_by: list[str], enterprise:
     return "".join(parts)
 
 
-def _table(state: dict, enterprise: dict, reviewed: Optional[dict] = None, mutation: Optional[dict] = None) -> str:
+def _table(state: dict, enterprise: dict, reviewed: Optional[dict] = None, mutation: Optional[dict] = None,
+           diff: Optional[dict] = None, security_before: Optional[dict] = None) -> str:
+    """The addons, not folded (the user, 2026-11-26: Status, Tests and Failed in one column, Mutation next to Coverage,
+    no Used by column). What changed since the report compared with: a new addon tagged, its coverage +/-, the tests
+    failing since, the security findings new since."""
+    diff, reviewed = diff or {}, reviewed or {}
     used_by = {name: sorted(n for n, e in state.items() if name in e.get('depends', [])) for name in state}
-    to_review = {name: sum(1 for f in e.get('security') or [] if f['id'] not in (reviewed or {})) for name, e in state.items()}
-    scores = {name: mutation_score(result) for name, result in (mutation or {}).items()}
-    columns = [("name", "Addon", ""), ("rank", "Status", ""), ("coverage", "Coverage", ""), ("tests", "Tests", ""),
-               ("failed", "Failed", "num"), ("loc", "Lines of code", "num"), ("usedby", "Used by", "num"),
-               ("ent", "Enterprise", "num"), ("security", "Security", "num")] + (
-              [("mutation", "Mutation", "num")] if mutation else [])
+    open_ = lambda e: [f for f in e.get('security') or [] if f['id'] not in reviewed]
+    to_review = {name: len(open_(e)) for name, e in state.items()}
+    fresh = {name: sum(1 for f in open_(e) if security_before is not None and f['id'] not in security_before)
+             for name, e in state.items()}
+    scores = {name: (mutation_score(result), mutation_score_all(result)) for name, result in (mutation or {}).items()}
+    coverage_change = {name: change for name, _, change, *_ in diff.get('metrics_changed', []) if change}
+    newly = {name: len(tests) for name, tests in diff.get('newly_failing', [])}
+    columns = ([("name", "Addon", ""), ("coverage", "Coverage", "")] + ([("mutation", "Mutation", "num")] if mutation else [])
+               + [("tests", "Tests", ""), ("loc", "Lines of code", "num"), ("ent", "Enterprise", "num"),
+                  ("security", "Security", "num")])
     head = "".join(f'<th data-key="{key}" class="{css}">{label}</th>' for key, label, css in columns)
     bodies = []
     for name, entry in sorted(state.items(), key=lambda item: (STATUS_RANK[report.status(item[1])], item[0])):
@@ -505,18 +571,22 @@ def _table(state: dict, enterprise: dict, reviewed: Optional[dict] = None, mutat
         coverage = entry['coverage'] if isinstance(entry.get('coverage'), int) and entry['coverage'] >= 0 else -1
         failed = len(entry.get('failed') or [])
         ent = enterprise.get(name, {})
-        ent_cell = f'<span class="st ent" title="{E(", ".join(ent))}"><b>◆</b>{len(ent)}</span>' if ent else ""
-        value = scores.get(name)
-        mutation_cell = (f'<td class="num" title="Changes of its code noticed by the tests (jsa mutation)">'
-                         f'{"" if value is None else f"{value}%"}</td>') if mutation else ""
+        reached, everything = scores.get(name, (None, None))
+        mutation_cell = (f'<td class="num" title="Changes of its code noticed by the tests (jsa mutation): of those its '
+                         f'tests reach, and of all">{"" if reached is None else f"{reached}%"}'
+                         + (f'<span class="whole">{everything}% of all</span>' if everything is not None else "")
+                         + '</td>') if mutation else ""
+        security_cell = (f'{to_review[name] or ""}' + (f' <span class="neg" title="New since the report compared with">'
+                                                       f'+{fresh[name]}</span>' if fresh[name] else ''))
+        new_tag = '<span class="tag">new</span>' if name in diff.get('added', []) else ''
         bodies.append(
-            f'<tbody class="addon" data-name="{E(name.lower())}" data-status="{state_name}" data-rank="{STATUS_RANK[state_name]}" '
-            f'data-coverage="{coverage}" data-tests="{entry.get("tests") or 0}" data-failed="{failed}" data-loc="{entry.get("loc", 0)}" '
-            f'data-usedby="{len(used_by[name])}" data-ent="{len(ent)}" data-security="{to_review[name]}" '
-            f'data-mutation="{-1 if value is None else value}"><tr><td class="name">{E(name)}</td><td>{_status_html(state_name)}</td>'
-            f'<td>{_coverage_html(entry)}</td><td>{_tests_html(entry)}</td><td class="num">{failed or ""}</td>'
-            f'<td class="num">{entry.get("loc", 0):,}</td><td class="num">{len(used_by[name]) or ""}</td><td class="num">{ent_cell}</td>'
-            f'<td class="num" title="Security findings to review">{to_review[name] or ""}</td>{mutation_cell}</tr>'
+            f'<tbody class="addon" data-name="{E(name.lower())}" data-status="{state_name}" data-coverage="{coverage}" '
+            f'data-mutation="{-1 if reached is None else reached}" data-tests="{STATUS_RANK[state_name] * 10000 - failed}" '
+            f'data-loc="{entry.get("loc", 0)}" data-ent="{len(ent)}" data-security="{to_review[name]}">'
+            f'<tr><td class="name">{new_tag}{E(name)}</td><td>{_coverage_html(entry, coverage_change.get(name))}</td>'
+            f'{mutation_cell}<td>{_tests_html(entry, newly.get(name, 0))}</td><td class="num">{entry.get("loc", 0):,}</td>'
+            f'<td class="num" title="{E(", ".join(ent))}">{len(ent) or ""}</td>'
+            f'<td class="num" title="Security findings to review">{security_cell}</td></tr>'
             f'<tr class="detail"><td colspan="{len(columns)}">{_detail(name, entry, state, used_by[name], ent)}</td></tr></tbody>')
     options = "".join(f'<option value="{name}">{label}</option>' for name, (label, _, _) in STATUS.items())
     options += '<option value="enterprise">Needs Odoo enterprise</option>'
@@ -554,7 +624,7 @@ def _security(state: dict, reviewed: dict, before: Optional[dict], off=()) -> st
         return (f'<li class="finding">{tag}<strong>{E(f["addon"])}</strong> · <code>{E(f["file"])}:{f["line"]}</code>'
                 f'{where}<div class="why">{E(f["why"])}</div><pre>{E(f["code"])}</pre>{end}</li>')
 
-    folds, total, total_new, total_gone = [], 0, 0, 0
+    folds, total, total_new, total_gone, total_done = [], 0, 0, 0, 0
     for r in security.RULES:
         if r.key in off:
             continue
@@ -564,6 +634,7 @@ def _security(state: dict, reviewed: dict, before: Optional[dict], off=()) -> st
         new = sum(1 for f in to_review if is_new(f))
         gone = sum(1 for i, rule in (before or {}).items() if rule == r.key and i not in current and i not in reviewed)
         total, total_new, total_gone = total + len(to_review), total_new + new, total_gone + gone
+        total_done += len(done)
         change = _change(new, gone)
         count = ((f"{len(to_review)} to review" if to_review else "nothing to review") + (f" ({change})" if change else "")
                  + (f" · {len(done)} reviewed" if done else ""))
@@ -588,8 +659,8 @@ def _security(state: dict, reviewed: dict, before: Optional[dict], off=()) -> st
         body += ('<p class="meta">Switched off in config.toml (<code>[security] skip</code>): '
                  + ", ".join(f"<code>{E(key)}</code>" for key in off) + '</p>')
     change = _change(total_new, total_gone)
-    return (f'<section id="security"><h2>Security review ({total} to review'
-            + (f': {change} since the previous report' if change else '') + f')</h2>{body}</section>')
+    return _part('security', 'Security review', (f"{total} to review" if total else "nothing to review")
+                 + (f" ({change})" if change else "") + (f" · {total_done} reviewed" if total_done else ""), body)
 
 
 REMOVALS = ("remove call", "remove assignment", "remove continue/break")  # mutants.REMOVALS
@@ -602,10 +673,19 @@ def mutation_counts(result: dict) -> dict:
 
 
 def mutation_score(result: dict) -> Optional[int]:
-    """Of the changes the tests reach, the share they notice (killed / (killed + survived)); None when none."""
+    """Of the changes the tests reach, the share they notice (killed / (killed + survived)): how well they check what
+    they run; None when none."""
     counts = mutation_counts(result)
     reached = counts['killed'] + counts['survived']
     return round(100 * counts['killed'] / reached) if reached else None
+
+
+def mutation_score_all(result: dict) -> Optional[int]:
+    """Of all the changes, the share the tests notice (killed / all): the changes in code no test runs count as not
+    noticed (what PIT and Infection call the mutation score); None when none."""
+    counts = mutation_counts(result)
+    total = sum(counts.values())
+    return round(100 * counts['killed'] / total) if total else None
 
 
 def _change_html(mutant: dict) -> str:
@@ -623,18 +703,21 @@ def mutation_entry(addon: str, mutant: dict) -> str:
 
 
 def _mutation(results: dict, reviewed: dict) -> str:
-    """What 'jsa mutation' found: per addon, its score, the changes of its code that no test noticed (grouped by
-    function, as sentences), those reviewed folded, its score run after run."""
+    """What 'jsa mutation' found, one fold per addon: its two scores (of the changes its tests reach, of all its
+    changes), the changes no test noticed as sentences (those new since its previous run first, tagged), those
+    reviewed folded, its scores run after run."""
     if not results:
         return ""
-    blocks, to_review_total = [], 0
+    folds, total, total_new = [], 0, 0
+    score = lambda value: "–" if value is None else f"{value}%"
     for addon, result in sorted(results.items()):
-        counts, value = mutation_counts(result), mutation_score(result)
+        counts = mutation_counts(result)
         survivors = sorted((m for m in result.get('mutants', []) if m.get('status') == 'survived'),
-                           key=lambda m: (m['file'], m['line']))
+                           key=lambda m: (not m.get('new'), m['file'], m['line']))
         to_review = [m for m in survivors if m['id'] not in reviewed]
         done = [m for m in survivors if m['id'] in reviewed]
-        to_review_total += len(to_review)
+        fresh = sum(1 for m in to_review if m.get('new'))
+        total, total_new = total + len(to_review), total_new + fresh
         when = E(str(result.get('date', ''))[:16].replace('T', ' '))
         notes = []
         if result.get('browser_tests'):
@@ -643,39 +726,51 @@ def _mutation(results: dict, reviewed: dict) -> str:
         if result.get('left_out'):
             notes.append("left out, failing or flaky without any change: " + ", ".join(f"<code>{E(t)}</code>"
                                                                                        for t in result['left_out']))
-        head = (f'<h3>{E(addon)} · {value if value is not None else "–"}{"%" if value is not None else ""} of the changes '
-                f'reached noticed</h3><p class="meta" style="margin:0 0 6px">{counts["killed"]} change(s) noticed by the '
-                f'tests, {counts["survived"]} not noticed, {counts["not reached"]} not reached by any test (the coverage '
-                f'shows those) · {result.get("tests", 0)} tests · measured {when}'
-                + (f' with Odoo {result["odoo"]}' if result.get('odoo') else '')
-                + (f' in {_seconds(result["seconds"])}' if result.get('seconds') else '') + '</p>'
-                + "".join(f'<p class="meta" style="margin:0 0 6px">{note}</p>' for note in notes))
 
         def item(m: dict, reason: Optional[str] = None) -> str:
             end = (f'<div class="why">Reviewed: {E(reason)}</div>' if reason is not None else
                    f'<button class="copy" data-copy="{E(mutation_entry(addon, m))}">Copy for reviewed.toml</button>')
             again = ' · checked by a real install (its code also runs while installing)' if m.get('checked') else ''
-            return (f'<li class="finding"><strong>{E(m["function"])}</strong> · <code>{E(m["file"])}:{m["line"]}</code>'
+            tag = '<span class="tag">new</span>' if m.get('new') and reason is None else ''
+            return (f'<li class="finding">{tag}<strong>{E(m["function"])}</strong> · <code>{E(m["file"])}:{m["line"]}</code>'
                     f'{again}<div>{_change_html(m)}</div>{end}</li>')
 
-        body = head + (f'<ul class="findings">{"".join(item(m) for m in to_review)}</ul>' if to_review else
-                       '<p class="meta">Every change the tests reach is noticed.</p>' if not done else '')
+        body = (f'<p class="meta" style="margin:0 0 6px">{counts["killed"]} change(s) noticed by the tests, '
+                f'{counts["survived"]} not noticed, {counts["not reached"]} not reached by any test (the coverage shows '
+                f'those) · {result.get("tests", 0)} tests · measured {when}'
+                + (f' with Odoo {result["odoo"]}' if result.get('odoo') else '')
+                + (f' in {_seconds(result["seconds"])}' if result.get('seconds') else '') + '</p>'
+                + "".join(f'<p class="meta" style="margin:0 0 6px">{note}</p>' for note in notes))
+        body += (f'<ul class="findings">{"".join(item(m) for m in to_review)}</ul>' if to_review else
+                 '<p class="meta">Every change the tests reach is noticed.</p>' if not done else '')
         if done:
-            body += (f'<details><summary>Reviewed ({len(done)})</summary><ul class="findings">'
+            body += (f'<details class="reviewed"><summary>Reviewed ({len(done)})</summary><ul class="findings">'
                      + "".join(item(m, reviewed[m['id']]) for m in done) + '</ul></details>')
-        runs = [(str(r.get('date', ''))[:16].replace('T', ' '), round(100 * r['killed'] / (r['killed'] + r['survived'])))
+        runs = [(str(r.get('date', ''))[:16].replace('T', ' '),
+                 (round(100 * r['killed'] / (r['killed'] + r['survived'])),
+                  round(100 * r['killed'] / (r['killed'] + r['survived'] + r.get('not reached', 0)))))
                 for r in result.get('runs', []) if r.get('killed', 0) + r.get('survived', 0)]
         if len(runs) >= 2:
-            body += '<p class="meta" style="margin:12px 0 0">Its score, run after run</p>' + line_chart(
-                f"Score of {addon}", runs, "%", 100, True)
-        blocks.append(f'<div class="mutated">{body}</div>')
-    return ('<section id="mutation"><h2>Untested behaviour: mutation testing'
-            + (f' ({to_review_total} change(s) not noticed)' if to_review_total else '') + '</h2>'
-            '<p class="meta" style="margin:0 0 10px"><code>jsa mutation</code> changes the code of an addon one small '
-            'change at a time (<code>&gt;</code> becomes <code>&lt;=</code>, a call is removed, ...) and runs the tests '
-            'that reach it: a change no test notices is behaviour the tests run without checking it. When one cannot '
-            'matter, copy its lines into <code>reviewed.toml</code> and say why in <code>reason</code>.</p>'
-            + "".join(blocks) + '</section>')
+            names = ("of the changes reached", "of all the changes")
+            body += ('<p class="meta" style="margin:12px 0 0">Its scores, run after run '
+                     '<span class="lines">' + "".join(f'<span><i{" class=" + chr(34) + "l1" + chr(34) if n else ""}></i>'
+                                                      f'{name}</span>' for n, name in enumerate(names)) + '</span></p>'
+                     + line_chart(f"Scores of {addon}", runs, "%", 100, True, names=names))
+        count = ((f"{len(to_review)} not noticed" if to_review else "nothing to review")
+                 + (f' (<span class="neg">+{fresh} new</span>)' if fresh else "") + (f" · {len(done)} reviewed" if done else ""))
+        folds.append(f'<details class="rule mutated" data-addon="{E(addon)}"><summary><span class="rname">{E(addon)}</span>'
+                     f'<span class="rkind">{score(mutation_score(result))} of the changes reached · '
+                     f'{score(mutation_score_all(result))} of all</span><span class="rcount">{count}</span></summary>'
+                     f'<div class="mbody">{body}</div></details>')
+    summary = ((f"{total} change(s) no test notices" if total else "every change the tests reach is noticed")
+               + (f' (<span class="neg">+{total_new} new</span>)' if total_new else "") + f" · {len(results)} addon(s)")
+    intro = ('<p class="meta" style="margin:0 0 10px"><code>jsa mutation</code> changes the code of an addon one small '
+             'change at a time (<code>&gt;</code> becomes <code>&lt;=</code>, a call is removed, ...) and runs the tests '
+             'that reach it: a change no test notices is behaviour the tests run without checking it. Two scores: of '
+             'the changes the tests reach (how well they check what they run), and of all the changes (those in code no '
+             'test runs count as not noticed: what other tools call the mutation score). When a change cannot matter, '
+             'copy its lines into <code>reviewed.toml</code> and say why in <code>reason</code>.</p>')
+    return _part('mutation', 'Mutation testing: untested behaviour', summary, intro + "".join(folds))
 
 
 def _seconds(seconds: float) -> str:
@@ -910,7 +1005,7 @@ def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict]
     shown_charts = opened + [name for name in listed if name not in unfolded]
     runs, events = report.runs_and_events(history)
     runs.sort(key=lambda r: code_date(r) or datetime.min)  # in the order of their code, whatever the order measured
-    runs = runs[-30:]
+    count, runs = len(runs), runs[-30:]
     if not shown_charts or len(runs) < 2:
         return ""
     builtin = {key: (title, unit, both) for key, title, unit, both in TREND_CHARTS}
@@ -932,7 +1027,14 @@ def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict]
                                   lambda r: (r.get('measures') or {}).get(name), custom=True)
         return ""  # a measure removed from config.toml
 
-    return ('<section id="trends"><h2>Trend of the measured runs</h2>' + "".join(section(name) for name in shown_charts)
+    last, day = runs[-1], lambda r: str(r.get('code_date') or r.get('date', ''))[:10]
+    facts = [f"{count} runs, from {day(runs[0])} to {day(last)}"]
+    if last.get('coverage') is not None:
+        facts.append(f"coverage {number(last['coverage'])}%" + (f" (whole {number(last['coverage_whole'])}%)"
+                                                               if last.get('coverage_whole') is not None else ""))
+    if last.get('loc') is not None:
+        facts.append(f"{last['loc']:,} lines of code")
+    return _part('trends', 'Trend of the measured runs', " · ".join(facts), "".join(section(name) for name in shown_charts)
             + '<p class="meta" style="margin:8px 0 0">One point per run that measured the coverage, every Odoo version '
             'together (a dashed line where it changes), at the date of the code measured: its last commit (the date of the '
             'run when it had uncommitted changes), so measuring old commits fills the past. Two lines for what is measured '
@@ -940,7 +1042,7 @@ def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict]
             '<strong>whole</strong> (all the addons installed and tested together, like production). '
             'Click a title to fold or unfold its chart. Each chart is zoomed on its values: "Axis from 0" draws it from '
             '0. To forget a run, delete its line in <code>history.jsonl</code>; to mark an event (a release, someone '
-            'joining the team), add a line there: <code>{"date": "2026-11-01", "event": "Release 2.0"}</code>.</p></section>')
+            'joining the team), add a line there: <code>{"date": "2026-11-01", "event": "Release 2.0"}</code>.</p>')
 
 
 def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Optional[dict], old_date: Optional[str],
@@ -961,16 +1063,29 @@ def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Option
         how = "coverage not measured in this run: results of the last measure shown for the unchanged addons"
     else:
         how = "coverage not measured (run with <code>-c -p &lt;profile&gt;</code>)"
+    # what is new since the report compared with: security findings (by rule) and their number gone; the changes no
+    # test notices, new since the previous 'jsa mutation' of their addon
+    reviewed, before, off = meta.get('reviewed') or {}, meta.get('security_before'), meta.get('security_off') or []
+    titles = {r.key: r.title for r in security.RULES}
+    current = {f['id'] for e in state.values() for f in e.get('security') or []}
+    fresh_findings = Counter(titles.get(f['rule'], f['rule']) for e in state.values() for f in e.get('security') or []
+                             if before is not None and f['id'] not in before and f['id'] not in reviewed)
+    gone_findings = sum(1 for i, rule in (before or {}).items() if i not in current and i not in reviewed and rule not in off)
+    survivors = {addon: n for addon, result in (meta.get('mutation') or {}).items()
+                 if (n := sum(1 for m in result.get('mutants', []) if m.get('status') == 'survived' and m.get('new')
+                              and m['id'] not in (meta.get('reviewed_changes') or {})))}
     return "".join([
         '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
         f'<title>Codebase report</title><style>{CSS}</style><style id="graph-css">{GRAPH_CSS}</style></head><body><main>',
         f'<h1>Codebase report</h1><p class="meta">Generated {E(when)} · {how}</p>',
-        _tiles(summary, old_summary, earlier), _attention(state, meta.get('standard_tests')), _standard(meta.get('standard_tests')), _enterprise(enterprise), _changes(diff, old_date),
-        _security(state, meta.get('reviewed') or {}, meta.get('security_before'), meta.get('security_off') or []),
+        _tiles(summary, old_summary, earlier),
+        _attention(state, summary, old_summary, diff, old_date, meta.get('standard_tests'),
+                   (dict(fresh_findings), gone_findings), survivors),
+        _trend(history, meta.get('measures') or [], meta.get('trends'), reviewed, off),
+        _security(state, reviewed, before, off),
         _mutation(meta.get('mutation') or {}, meta.get('reviewed_changes') or {}),
-        _table(state, enterprise, meta.get('reviewed'), meta.get('mutation')),
-        _graph(graphs), _trend(history, meta.get('measures') or [], meta.get('trends'), meta.get('reviewed'),
-                               meta.get('security_off') or []),
+        _enterprise(enterprise, dict((diff or {}).get('enterprise_added', []))), _standard(meta.get('standard_tests')),
+        _table(state, enterprise, reviewed, meta.get('mutation'), diff, before), _graph(graphs),
         '<footer>Files next to this report: <code>state.json</code> (last results, reused for unchanged addons), '
         '<code>history.jsonl</code> (one line per measured run), <code>coverage_odoo.log</code> (full Odoo log of the last measure).</footer>',
         '</main><script type="application/json" id="data">', json.dumps(data).replace("</", "<\\/"), '</script>',

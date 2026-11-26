@@ -97,6 +97,16 @@ def load(name: str) -> dict:
         return {}
 
 
+def mark_new(mutants: list[dict], previous: dict):
+    """The changes no test notices now but did in the previous measure of the addon: 'new' (the report tags them).
+    None on a first measure: nothing to compare with."""
+    if previous.get('mutants'):
+        before = {m['id'] for m in previous['mutants'] if m.get('status') == 'survived'}
+        for mutant in mutants:
+            if mutant.get('status') == 'survived' and mutant['id'] not in before:
+                mutant['new'] = True
+
+
 def test_tags(module: str, tests: list[str]) -> str:
     """--test-tags of some tests: odoo.addons.m.tests.test_x.TestX.test_a -> /m:TestX.test_a."""
     return ",".join(f"/{module}:{'.'.join(name.split('.')[-2:])}" for name in tests)
@@ -312,6 +322,7 @@ def mutation(
                   'fingerprint': key, **result}
         counts = report_html.mutation_counts(result)
         result['runs'] = previous.get('runs', []) + [{'date': now, **counts}]
+        mark_new(result['mutants'], previous)
         results_dir().mkdir(parents=True, exist_ok=True)
         (results_dir() / f"{name}.json").write_text(json.dumps(result, indent=1), encoding="utf-8")
         value = report_html.mutation_score(result)

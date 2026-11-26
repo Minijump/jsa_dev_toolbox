@@ -249,7 +249,8 @@ def test_the_report_lists_the_findings_and_the_chart_counts_those_not_reviewed(t
     findings = state["my_addon"]["security"]
     assert len(findings) == 13 and {"rule", "addon", "file", "line", "where", "code", "why", "id"} <= set(findings[0])
     page = (out / "report.html").read_text(encoding="utf-8")
-    assert '<section id="security"><h2>Security review (13 to review)</h2>' in page
+    assert ('<details class="part" id="security"><summary><h2>Security review</h2><span class="psum">13 to review'
+            '</span></summary>') in page
     assert 'class="tag"' not in page  # nothing new the first time
     assert "Left out: methods whose name starts with" in page  # what each rule does, in the page
     assert page.count('<button class="copy"') == 13 and 'data-security="13"' in page
@@ -262,7 +263,10 @@ def test_the_report_lists_the_findings_and_the_chart_counts_those_not_reviewed(t
     codebase.analyse(conf, [roots], out)
     assert "🔒 Security review: 13 to review (+1 new), 1 reviewed" in capsys.readouterr().out
     page = (out / "report.html").read_text(encoding="utf-8")
-    assert '<h2>Security review (13 to review: <span class="neg">+1 new</span> since the previous report)</h2>' in page
+    assert ('<h2>Security review</h2><span class="psum">13 to review (<span class="neg">+1 new</span>) · 1 reviewed'
+            '</span>') in page
+    assert '<a href="#security">1 new security finding(s) to review</a>: eval() or exec() (1)' in page  # on top too
+    assert 'data-security="13"' in page and '+1</span>' in page  # the table: to review, +1 new
     # each rule holds its findings, in its own fold, with the change since the previous report in its summary
     evals =page[page.index('data-rule="eval"'):page.index('</section>', page.index('data-rule="eval"'))]
     assert '<span class="rcount">2 to review (<span class="neg">+1 new</span>)</span>' in evals

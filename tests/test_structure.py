@@ -7,7 +7,7 @@ import typer
 
 from jsa.core import addons, config, odoo
 from jsa.structure import codebase, report, report_html
-from jsa.structure.coverage import NOT_INSTALLABLE, Result
+from jsa.structure.coverage import NO_REPORT, NOT_INSTALLABLE, Result
 
 
 def make_addon(root, name, manifest="{'depends': ['base']}"):
@@ -104,7 +104,8 @@ def test_enterprise_dependencies(tmp_path):
     never_checked = {"a": {"depends": ["web_studio"]}}
     assert report.compute_diff(never_checked, new)["enterprise_added"] == []  # first check: not a change
     html = report_html.render(new, report.summarize(new), None, None, None, [], {}, {"generated_at": "2026-01-01T10:00:00"})
-    for expected in ("Dependencies on Odoo enterprise (1 modules, 2 addons)", "through a", "Needs Odoo enterprise"):
+    for expected in ('<h2>Dependencies on Odoo enterprise</h2><span class="psum">1 modules, 2 addons</span>', "through a",
+                     "Needs Odoo enterprise"):
         assert expected in html
 
 
@@ -119,8 +120,8 @@ def test_problem_with_all_the_addons_is_failing():
                                                   "modules": {"sale": {"tests": 40, "failed": ["TestSale.test_a"]}}}})
     for expected in ("cannot be installed with all the addons (install failed (x))", "Tests of the standard modules",
                      "with all the addons (whole): <code>T.with_a</code>", "Failing only with all the addons (whole)",
-                     "2 passed<span class=\"whole\"", ">whole: 1 failed</span>", "80%</span><span class=\"whole\" "
-                     "title=\"With all the addons installed and tested together\">whole 90%</span>",
+                     "<b>✔</b>2 passed</span><span class=\"whole bad\"", ">whole: 1 failed</span>", ">whole: not installable</span>",
+                     "80%</span><span class=\"whole\" title=\"With all the addons installed and tested together\">whole 90%</span>",
                      "40 tests in 1 standard modules", "TestSale.test_a", "(standard module, with your addons)"):
         assert expected in page
 
@@ -146,10 +147,11 @@ def test_compute_diff_compares_only_measures_taken_the_same_way():
     assert diff["not_comparable"] == ["a"]  # another Odoo version compares (c), measures of other rules do not (a)
     assert diff["metrics_changed"] == [("a", 2, None, 80, 60), ("b", 0, 5, 50, 55)]  # a: its lines only, not its coverage
     assert diff["newly_failing"] == [] and diff["fixed"] == [("b", ["T.x"])] and diff["could_to_cant"] == ["c"]
-    page = report_html._changes(diff, "2026-10-25T10:00:00")
-    assert "Coverage and tests of 1 addon not compared: measured by another version of jsa" in page and "+2 lines" in page
-    only = report_html._changes({**report.compute_diff({}, {}), "not_comparable": ["a"]}, None)
-    assert "Nothing changed" not in only and "Coverage and tests of 1 addon not compared" in only
+    page = report_html._attention(new, report.summarize(new), report.summarize(old), diff, "2026-10-25T10:00:00")
+    assert '<span class="tag">new</span><strong>c</strong>: could not be installed' in page  # not installable anymore
+    # a: measured by another version of jsa, not compared: failing, but not said new; no coverage down
+    assert "Coverage down" not in page and "<code>T.y</code>" in page and '<span class="tag">new</span><code>T.y</code>' not in page
+    assert "1 test(s) fixed (b)" in page and "since the report of 2026-10-25 10:00" in page
 
 
 def test_dot_with_and_without_standard_modules():
@@ -483,3 +485,64 @@ def test_structure_measures_per_module_then_whole(tmp_path, monkeypatch):
     assert calls == [("isolated", ["a", "b"], False), ("whole", ["a", "b"], True)]
     line = report.load_history(out / report.HISTORY_FILE)[-1]
     assert (line["coverage"], line["coverage_whole"], line["not_installable_whole"]) == (60.0, 0.0, 2)
+
+
+def test_needs_attention_says_what_got_worse_first(tmp_path):
+    entry = lambda coverage, failed=(), **more: {"loc": 10, "depends": [], "coverage": coverage, "tests": 3,
+                                                  "failed": list(failed), "coverage_rules": 6, **more}
+    still = {"coverage": NOT_INSTALLABLE, "note": "x", "loc": 1, "depends": [], "coverage_rules": 6}
+    old = {"a": entry(80, ["T.old"]), "b": entry(60), "gone": entry(50), "x": still,
+           "w": entry(70, whole={"coverage": 75, "failed": [], "tests": 3})}
+    new = {"a": entry(78, ["T.old", "T.new"]), "b": entry(64), "c": {**entry(0), "tests": 0}, "x": still,
+           "w": entry(70, whole={"coverage": NOT_INSTALLABLE, "note": "conflicts with b", "failed": []})}
+    diff = report.compute_diff(old, new)
+    assert diff["whole_could_to_cant"] == ["w"] and diff["newly_failing"] == [("a", ["T.new"])]
+    page = report_html._attention(new, report.summarize(new), report.summarize(old), diff, "2026-11-25T10:00:00",
+                                  findings=({"eval() or exec()": 2}, 1), survivors={"a": 1})
+    items = page[page.index("<ul>"):page.index("</ul>")]
+    assert items.index("Coverage down") < items.index("<strong>x</strong>: x")  # what is new first, then what still is
+    assert '<span class="tag">new</span><code>T.new</code>' in items and "<code>T.old</code>" in items
+    assert '<strong>a</strong>: 80% → 78% (<span class="neg">-2 pts</span>)' in items  # coverage down, per addon
+    assert '<span class="tag">new</span>cannot be installed with all the addons (conflicts with b)' in items
+    assert '<a href="#security">2 new security finding(s) to review</a>: eval() or exec() (2)' in items
+    assert '<a href="#mutation">1 new change(s) no test notices</a>: a (1)' in items
+    assert "<strong>c</strong>: a new addon without tests" in items
+    assert "coverage up: b +4 pts" in page and "1 security finding(s) gone" in page  # what got better, one line
+    assert '<details class="part" id="attention" open><summary><h2>Needs attention</h2><span class="psum">' \
+           '<span class="neg">6 new</span> · 1 still to fix (since the report of 2026-11-25 10:00)</span>' in page
+    calm = report_html._attention({"a": entry(80)}, {}, None, None, None)
+    assert '<span class="psum">nothing</span>' in calm and "Nothing needs attention." in calm
+
+
+def test_a_report_made_again_keeps_saying_what_changed(tmp_path):
+    loc, deps = {"a": 10}, {"a": []}
+    report.write_reports(loc, deps, {"a": Result(80, tests=2, statements=10, covered=8)}, tmp_path)
+    report.write_reports(loc, deps, {"a": Result(70, tests=2, failed=["T.x"], statements=10, covered=7)}, tmp_path)
+    tagged = lambda: '<span class="tag">new</span><code>T.x</code>' in (tmp_path / "report.html").read_text(encoding="utf-8")
+    assert tagged()
+    # made again with nothing changed (jsa mutation, a report without -c): the same comparison, still new
+    report.write_reports(loc, deps, {"a": Result(70, tests=2, failed=["T.x"], statements=10, covered=7)}, tmp_path)
+    assert tagged() and report.load_state(tmp_path, "baseline")[0]["a"]["coverage"] == 80
+    # something changed: compared with the previous report again
+    report.write_reports(loc, deps, {"a": Result(72, tests=2, failed=["T.x"], statements=10, covered=7)}, tmp_path)
+    assert not tagged()
+
+
+def test_the_table_says_the_tests_in_one_column():
+    state = {"ok": {"coverage": 90, "tests": 4, "failed": [], "loc": 1, "depends": []},
+             "bad": {"coverage": 50, "tests": 5, "failed": ["T.a", "T.b"], "loc": 1, "depends": ["ok"], "enterprise": ["helpdesk"]},
+             "none": {"coverage": NO_REPORT, "tests": 0, "failed": [], "loc": 1, "depends": []},
+             "broken": {"coverage": NOT_INSTALLABLE, "note": "x", "loc": 1, "depends": []}}
+    diff = {**report.compute_diff({}, {}), "added": ["none"], "newly_failing": [("bad", ["T.b"])],
+            "metrics_changed": [("ok", 0, 3, 87, 90)]}
+    table = report_html._table(state, report.enterprise_dependencies(state), diff=diff)
+    head = table[table.index("<thead>"):table.index("</thead>")]
+    assert [part.split(">", 1)[1].split("<")[0] for part in head.split("<th data-key")[1:]] == [
+        "Addon", "Coverage", "Tests", "Lines of code", "Enterprise", "Security"]
+    assert "Used by" not in head and "Status" not in head and "Failed" not in head
+    assert '<b>⚠</b>2 of 5 failed</span> <span class="neg" title="Failing since the report compared with">+1</span>' in table
+    assert '<b>✔</b>4 passed</span>' in table and '<b>○</b>no tests</span>' in table and '<b>✖</b>not installable</span>' in table
+    assert '90% <span class="pos" title="Since the report compared with">+3</span>' in table
+    assert '<span class="tag">new</span>none' in table and "◆" not in table
+    ranks = [int(part.split('"')[1]) for part in table.split('data-tests=')[1:]]
+    assert ranks == sorted(ranks)  # not installable, failing (most failures first), no tests, passing
