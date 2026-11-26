@@ -78,15 +78,18 @@ def check_tools() -> Iterator[Check]:
 
 
 def check_config() -> Iterator[Check]:
+    if config.PROJECT_DIR:
+        yield OK, "📁", f"Project {config.PROJECT_DIR}: {config.settings_file()} on top of {config.CONFIG_FILE}"
     if not config.CONFIG_FILE.exists():
         yield WARN, "📄", f"No {config.CONFIG_FILE}: needed for the sanitize steps of restore, structure, pending-upgrades (copy config.example.toml)"
-        return
+        if not config.PROJECT_DIR:
+            return
     try:
         conf = config.load_config()
     except typer.Exit:
         yield FAIL, "📄", "config.toml is not valid (see the message above)"
         return
-    yield OK, "📄", "config.toml is valid"
+    yield OK, "📄", "config.toml is valid" + (" (the toolbox's and the project's)" if config.PROJECT_DIR else "")
     try:
         steps, _ = restore_steps.steps_from_config(conf)
     except typer.Exit:

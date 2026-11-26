@@ -18,6 +18,10 @@ In `config.toml`: the folders of your addons (`[codebase] addons_roots`), one pr
 are already there: 2FA off, every password `admin`, ...). Put your dumps in `dumps/`, then check it all with
 `jsa doctor`.
 
+Several projects (one repository of addons per company, say): `jsa init` in each one. Its `.jsa/` folder holds only
+what differs from the toolbox's `config.toml` (its addons, its restore steps...) and its own reports; jsa uses it when
+run from that folder or below, or with `jsa -P <folder> <command>`.
+
 ## Commands
 | Command | What it does | Options |
 |---|---|---|
@@ -40,11 +44,13 @@ are already there: 2FA off, every password `admin`, ...). Put your dumps in `dum
 | `jsa backfill` | measures the old commits listed in `plugins/backfill/backfill.toml` (each with the profile of its Odoo version, per module and whole) for the trends of the report, with your events; the history follows the file, a measure added to `config.toml` is counted on the commits already measured | `--dry-run`: show the commits, their Odoo version and profile, what would be removed or counted; measure nothing |
 | `jsa quote-pdfs <db>` | puts back the PDF files of the quotation headers and footers (Odoo 18+), from `plugins/quote_pdfs/` | `-p <profile>` (required): the Odoo of the database<br>`--list`: only list them, with their id |
 | **jsa** | | |
+| `jsa init [folder]` | makes a folder a project: its settings (only what differs from the toolbox's `config.toml`), reviewed findings and reports in its `.jsa/` | |
 | `jsa doctor` | checks PostgreSQL, graphviz, `config.toml`, the profiles and the plugins | |
 | `jsa version` | which code runs, and whether the repository has newer commits | `--no-fetch`: do not ask the remote |
 | `jsa update` | pulls and reinstalls jsa | |
 
-`--data-dir` (`restore`, `snapshot`, `reset`, `clone`, `remove`, `doctor`): Odoo's data folder, where the filestores
+`-P <folder>` before the command (`jsa -P ~/work/acme structure -c -p 19`): the project to work on, instead of the
+one of the current folder. `--data-dir` (`restore`, `snapshot`, `reset`, `clone`, `remove`, `doctor`): Odoo's data folder, where the filestores
 are, when it is not `~/.local/share/Odoo`. `jsa <command> --help` describes every argument and option.
 
 ## More

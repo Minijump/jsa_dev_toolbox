@@ -196,7 +196,7 @@ def structure(
     roots = config.addons_roots(conf)
     missing = [str(r) for r in roots if not r.is_dir()]
     if not roots or missing:
-        typer.echo(f"❌ Set [codebase] addons_roots in {config.CONFIG_FILE} to existing folders"
+        typer.echo(f"❌ Set [codebase] addons_roots in {config.settings_file()} to existing folders"
                    + (f" (not found: {', '.join(missing)})" if missing else ""))
         raise typer.Exit(code=1)
     coverage_profile = None

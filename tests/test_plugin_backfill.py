@@ -21,7 +21,7 @@ def test_the_sample_is_a_valid_plan():
     assert plan["profiles"] == {} and "modes" not in plan
 
 
-def test_mistakes_in_the_plan_are_refused(tmp_path, capsys):
+def test_mistakes_in_the_plan_are_refused(tmp_path, capsys, monkeypatch):
     plan = tmp_path / "backfill.toml"
     for text, why in (("", "no [[commits]] to measure"),
                       ("[[commits]]\ncomit = 'abc'\n", "has the key(s) comit, which do not exist"),
@@ -38,7 +38,13 @@ def test_mistakes_in_the_plan_are_refused(tmp_path, capsys):
         assert why in capsys.readouterr().out
     with pytest.raises(typer.Exit):
         backfill.read_plan(tmp_path / "missing.toml")
-    assert "copy missing.toml.sample" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "missing.toml: copy " in out and "backfill.toml.sample there" in out
+    # in a project, its backfill.toml is in its .jsa/ folder
+    monkeypatch.setattr(backfill.config, "PROJECT_DIR", tmp_path)
+    assert backfill.plan_file() == tmp_path / ".jsa" / "backfill.toml"
+    monkeypatch.setattr(backfill.config, "PROJECT_DIR", None)
+    assert backfill.plan_file() == PLUGIN.parent / "backfill.toml"
     plan.write_text("[[commits]]\ncommit = 'a'\n[profiles]\n17 = 'odoo17'\n")
     assert backfill.read_plan(plan)["profiles"] == {"17": "odoo17"}
 

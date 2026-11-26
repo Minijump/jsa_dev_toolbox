@@ -24,6 +24,69 @@ def test_load_config(tmp_path):
         config.load_config(path=missing)
 
 
+def _keep_the_project(monkeypatch):
+    """The test may switch project: put back what jsa works on afterwards."""
+    for name in ("PROJECT_DIR", "ANALYSIS_DIR", "REVIEWED_FILE"):
+        monkeypatch.setattr(config, name, getattr(config, name))
+
+
+def test_a_project_has_its_settings_on_top_of_the_toolbox(tmp_path, monkeypatch):
+    _keep_the_project(monkeypatch)
+    toolbox, acme = tmp_path / "toolbox", tmp_path / "work" / "acme"
+    toolbox.mkdir()
+    (acme / "sub" / "deep").mkdir(parents=True)
+    (toolbox / "config.toml").write_text(
+        'plugins_dirs = ["~/p"]\n[codebase]\naddons_roots = ["~/default_addons"]\ntest_timeout = 5\n'
+        '[profiles.17]\npython = "~/venv17/bin/python"\nodoo_root = "~/odoo17"\n[security]\nskip = ["eval"]\n')
+    monkeypatch.setattr(config, "CONFIG_FILE", toolbox / "config.toml")
+    monkeypatch.setattr(config, "TOOLBOX_DIR", toolbox)
+    assert config.find_project(acme / "sub" / "deep") is None
+    (acme / ".jsa").mkdir()
+    assert config.find_project(acme / "sub" / "deep") == acme  # like git finds .git: from a sub-folder too
+    config.use_project(None)
+    assert config.load_config()["codebase"]["addons_roots"] == ["~/default_addons"]  # no project: as before
+    assert config.ANALYSIS_DIR == toolbox / "codebase_analysis" and config.settings_file() == toolbox / "config.toml"
+    config.use_project(acme)
+    assert config.ANALYSIS_DIR == acme / ".jsa" / "codebase_analysis" and config.REVIEWED_FILE == acme / ".jsa" / "reviewed.toml"
+    assert config.settings_file() == acme / ".jsa" / "config.toml"
+    conf = config.load_config()  # no config.toml in the project yet
+    assert conf["codebase"] == {"addons_roots": [str(acme)], "test_timeout": 5}  # its own addons: the folder itself
+    assert conf["profiles"]["17"]["python"] == "~/venv17/bin/python" and conf["plugins_dirs"] == ["~/p"]  # shared
+    elsewhere = tmp_path / "elsewhere"
+    (acme / ".jsa" / "config.toml").write_text(
+        f'[codebase]\naddons_roots = ["addons", "{elsewhere.as_posix()}"]\n[profiles.17]\nodoo_root = "~/odoo17_acme"\n'
+        '[security]\nskip = []\n')
+    conf = config.load_config()
+    assert conf["codebase"]["addons_roots"] == [str(acme / "addons"), str(elsewhere)]  # relative to the project
+    assert conf["profiles"]["17"] == {"python": "~/venv17/bin/python", "odoo_root": "~/odoo17_acme"}  # merged by key
+    assert conf["security"]["skip"] == [] and conf["codebase"]["test_timeout"] == 5  # a key replaces the same key
+    assert config.load_config(path=toolbox / "config.toml")["security"]["skip"] == ["eval"]  # a file given: itself only
+
+
+def test_jsa_init_and_the_project_option(tmp_path, monkeypatch, capsys):
+    from jsa import cli, project
+    _keep_the_project(monkeypatch)
+    acme = tmp_path / "acme"
+    (acme / "my_addon").mkdir(parents=True)
+    (acme / "my_addon" / "__manifest__.py").write_text("{}")
+    project.init(acme)
+    out = capsys.readouterr().out
+    assert (acme / ".jsa" / "config.toml").exists() and "1 addon(s) directly in the folder" in out and ".gitignore" in out
+    assert "only what differs from the config.toml of the toolbox" in (acme / ".jsa" / "config.toml").read_text()
+    with pytest.raises(typer.Exit):
+        project.init(acme)  # already a project: nothing overwritten
+    assert "is a project already" in capsys.readouterr().out
+    assert cli.project_of(["-P", str(acme), "structure"]) == acme.resolve()
+    assert cli.project_of([f"--project={acme}", "doctor"]) == acme.resolve()
+    monkeypatch.chdir(acme / "my_addon")
+    assert cli.project_of(["structure", "-c"]) == acme.resolve()  # found from the current folder
+    monkeypatch.chdir(tmp_path)
+    assert cli.project_of(["structure"]) is None  # none: the toolbox's own settings
+    with pytest.raises(SystemExit):
+        cli.project_of(["-P", str(tmp_path), "structure"])
+    assert "No .jsa folder in" in capsys.readouterr().out
+
+
 def test_load_profile(tmp_path, capsys):
     python, odoo_bin = tmp_path / "python", tmp_path / "odoo-bin"
     python.touch()

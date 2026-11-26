@@ -6,6 +6,8 @@ A plugin made of a folder: its code (this file), and its own file next to it, so
         __init__.py       this code (part of the toolbox)
         backfill.toml     the commits to measure and your events (yours: copy backfill.toml.sample)
 
+In a project (jsa init), its backfill.toml is in its .jsa/ folder, next to its reports.
+
 'jsa backfill' checks out each commit of backfill.toml in a temporary git worktree (your checkout is not touched),
 does what 'jsa structure -c' does (per module, then whole) with the profile running the Odoo version of that code
 (read in its manifests: '17.0.1.0.0' is Odoo 17), and adds the run to the history of the report at the date of the
@@ -46,7 +48,7 @@ from jsa.structure import codebase, report, security
 from jsa.structure.bisect import in_worktree
 
 FOLDER = Path(__file__).resolve().parent
-PLAN = FOLDER / "backfill.toml"
+PLAN = FOLDER / "backfill.toml"  # in a project: .jsa/backfill.toml (plan_file)
 KEYS = {'commits': ('commit', 'event'), 'events': ('date', 'event')}
 VERSION_RE = re.compile(r'^(\d+)\.0\.')
 
@@ -64,10 +66,16 @@ def git(folder: Path, *args: str) -> subprocess.CompletedProcess:
 
 # ---------- backfill.toml ----------
 
-def read_plan(path: Path = PLAN) -> dict:
+def plan_file() -> Path:
+    """The backfill.toml of the project worked on (in its .jsa/), else the one next to this file."""
+    return config.PROJECT_DIR / config.PROJECT_FOLDER / PLAN.name if config.PROJECT_DIR else PLAN
+
+
+def read_plan(path: Optional[Path] = None) -> dict:
     """{commits: [{commit, event?}], events: [{date, event}], profiles: {version: profile}}. Stops on a mistake."""
+    path = path or plan_file()
     if not path.exists():
-        stop(f"No {path}: copy {path.name}.sample next to it, and list the commits to measure")
+        stop(f"No {path}: copy {FOLDER / (PLAN.name + '.sample')} there, and list the commits to measure")
     try:
         plan = config.tomllib.loads(path.read_text(encoding="utf-8"))
     except config.tomllib.TOMLDecodeError as e:
@@ -297,7 +305,7 @@ def backfill(dry_run: bool = typer.Option(False, "--dry-run", help="Show the com
     conf = config.load_config()
     roots = config.addons_roots(conf)
     if not roots or any(not root.is_dir() for root in roots):
-        stop(f"Set [codebase] addons_roots in {config.CONFIG_FILE} to existing folders")
+        stop(f"Set [codebase] addons_roots in {config.settings_file()} to existing folders")
     measures = codebase.measures_from_config(conf)
     trends = codebase.trends_from_config(conf, measures)
     limit = codebase.test_timeout(conf, warn=True)  # checked before hours of measures

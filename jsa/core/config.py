@@ -35,17 +35,49 @@ def _find_toolbox_dir():
 
 TOOLBOX_DIR = _find_toolbox_dir()
 CONFIG_FILE = TOOLBOX_DIR / "config.toml"
-DUMPS_DIR = TOOLBOX_DIR / "dumps"
-ANALYSIS_DIR = TOOLBOX_DIR / "codebase_analysis"
+DUMPS_DIR = TOOLBOX_DIR / "dumps"  # shared by every project
 PLUGINS_DIR = TOOLBOX_DIR / "plugins"
-REVIEWED_FILE = TOOLBOX_DIR / "reviewed.toml"  # findings of the security review looked at and found fine
 # Odoo data_dir (holds the filestores) when not configured otherwise
 DEFAULT_DATA_DIR = Path.home() / ".local" / "share" / "Odoo"
 
+# A project (jsa init): a folder holding .jsa/, with its own config.toml (only what differs from the toolbox's),
+# reviewed.toml, backfill.toml and reports. Set by use_project; the toolbox's own files when there is none.
+PROJECT_FOLDER = ".jsa"
+PROJECT_DIR: Optional[Path] = None
+ANALYSIS_DIR = TOOLBOX_DIR / "codebase_analysis"
+REVIEWED_FILE = TOOLBOX_DIR / "reviewed.toml"  # findings of the security review looked at and found fine
 
-def load_config(required: bool = True, path: Optional[Path] = None) -> dict[str, Any]:
-    """Read config.toml. When not required, a missing file means an empty config."""
-    path = path or CONFIG_FILE
+
+def find_project(start: Path) -> Optional[Path]:
+    """The folder holding a .jsa/ folder: `start` or one of its parents, like git finds .git. None: there is none."""
+    for folder in (start, *start.parents):
+        if (folder / PROJECT_FOLDER).is_dir():
+            return folder
+    return None
+
+
+def use_project(root: Optional[Path]):
+    """Work on a project (the folder holding .jsa/), or on the toolbox's own files (None)."""
+    global PROJECT_DIR, ANALYSIS_DIR, REVIEWED_FILE
+    PROJECT_DIR = root
+    base = root / PROJECT_FOLDER if root else TOOLBOX_DIR
+    ANALYSIS_DIR, REVIEWED_FILE = base / "codebase_analysis", base / "reviewed.toml"
+
+
+def settings_file() -> Path:
+    """Where the settings of what jsa works on are written: the project's .jsa/config.toml, else config.toml."""
+    return PROJECT_DIR / PROJECT_FOLDER / "config.toml" if PROJECT_DIR else CONFIG_FILE
+
+
+def merged(base: dict, over: dict) -> dict:
+    """`over` on top of `base`: a key replaces the same key, a table is merged key by key."""
+    out = dict(base)
+    for key, value in over.items():
+        out[key] = merged(base[key], value) if isinstance(value, dict) and isinstance(base.get(key), dict) else value
+    return out
+
+
+def _read(path: Path, required: bool) -> dict[str, Any]:
     try:
         return tomllib.loads(path.read_text(encoding='utf-8'))
     except FileNotFoundError:
@@ -57,6 +89,22 @@ def load_config(required: bool = True, path: Optional[Path] = None) -> dict[str,
     except tomllib.TOMLDecodeError as e:
         typer.echo(f"❌ Invalid TOML in {path}: {e}")
         raise typer.Exit(code=1)
+
+
+def load_config(required: bool = True, path: Optional[Path] = None) -> dict[str, Any]:
+    """Read config.toml (or `path`). When not required, a missing file means an empty config.
+    In a project: its .jsa/config.toml on top of the toolbox's (merged), which holds what every project shares
+    (profiles, plugins). Its addons are its own: [codebase] addons_roots of the project (relative to its folder),
+    by default the project folder itself; never those of the toolbox's config.toml."""
+    if path or not PROJECT_DIR:
+        return _read(path or CONFIG_FILE, required)
+    own = _read(settings_file(), False)
+    roots = (own.get('codebase') or {}).get('addons_roots', ["."])
+    roots = [roots] if isinstance(roots, str) else roots
+    conf = merged(_read(CONFIG_FILE, False), own)
+    conf['codebase'] = {**(conf.get('codebase') or {}),
+                        'addons_roots': [str(PROJECT_DIR / Path(p).expanduser()) for p in roots]}
+    return conf
 
 
 def load_profile(profile: str, config: Optional[dict[str, Any]] = None) -> dict[str, Any]:

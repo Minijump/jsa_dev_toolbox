@@ -1,4 +1,5 @@
 # Copy this file to config.toml (gitignored) and adapt it to your machine.
+# Several projects: 'jsa init' in each one; its .jsa/config.toml holds only what differs from this file.
 
 # Extra folders containing private plugins (*.py with a register(app) function), besides ./plugins/
 # plugins_dirs = ["~/projects/my_private_jsa_plugins"]

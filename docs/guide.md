@@ -5,6 +5,7 @@ commands and the development of jsa itself.
 
 - [Installation in detail](#installation-in-detail)
 - [config.toml](#configtoml)
+- [Several projects](#several-projects)
 - [Databases](#databases)
 - [Codebase report and test coverage](#codebase-report-and-test-coverage)
 - [Finding the commit that broke a test](#finding-the-commit-that-broke-a-test)
@@ -87,6 +88,24 @@ mail servers step, `sql = "..."` replaces its SQL. So a `config.toml` that still
 (from before jsa 0.34) does the same as before, and its copies can be deleted.
 
 **`plugins_dirs`**: see [plugins](#your-own-commands-plugins).
+
+## Several projects
+
+When you work on several codebases (one repository of addons per company, say), each can be a project of its own:
+`jsa init` in its folder (or `jsa init <folder>`) creates `.jsa/` there, with a commented `config.toml`.
+
+- **Which project**: jsa looks for `.jsa/` in the current folder, then in the folders above it (like git finds
+  `.git`), and says which one it uses (`📁 Project: ~/work/acme`). From anywhere: `jsa -P ~/work/acme <command>`.
+  With no `.jsa/` found, jsa works as before, on the toolbox's own files.
+- **Only what differs**: the toolbox's `config.toml` stays the base of every project (profiles, plugins, your
+  measures...). The project's `.jsa/config.toml` holds what is its own: a key there replaces the same key, a table
+  (`[profiles.19]`) is merged key by key, a list (`[[restore.extra_steps]]`, `[[report.measures]]`) replaces the
+  toolbox's. Its addons are always its own: `[codebase] addons_roots` (relative to the project folder), by default
+  the project folder itself.
+- **In `.jsa/`**: its `config.toml`, `reviewed.toml` (the findings found fine), `backfill.toml` (the commits
+  `jsa backfill` measures), and its reports (`codebase_analysis/`: report, history, mutation results). The dumps
+  stay shared, in the toolbox's `dumps/`.
+- Keep `.jsa/` out of git: add it to the `.gitignore` of the repository.
 
 ## Databases
 
@@ -411,7 +430,7 @@ except:
 | `core/` | config, PostgreSQL, addons on disk, running Odoo, plugins, terminal output (no command) |
 | `db/` | restore, databases, modules |
 | `structure/` | codebase report, coverage, bisect |
-| `doctor.py`, `self_update.py` | `doctor`, `version`, `update` |
+| `project.py`, `doctor.py`, `self_update.py` | `init`, `doctor`, `version`, `update` |
 
 A feature never imports another one: what two of them share goes in `core/`.
 
