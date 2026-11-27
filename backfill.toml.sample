@@ -1,5 +1,7 @@
-# The commits 'jsa backfill' measures (copy this file to backfill.toml, next to it). In any order: each run is placed
-# at the date of its commit in the trends of the report. A commit already measured is skipped.
+# The history of the codebase report: the commits 'jsa backfill' records, and the events of its trend (copy this file
+# to backfill.toml, next to it; in a project, in its .jsa/ folder). In any order: each commit is placed at its date in
+# the trend. A commit already recorded is skipped; one taken out of this file is forgotten. 'jsa structure' never adds
+# to the history: to record today's code, add its commit (or a tag) here and run 'jsa backfill'.
 
 [[commits]]
 commit = "4f2a9c1"                  # a commit hash, a tag or a branch of the repository of your addons
@@ -8,7 +10,7 @@ commit = "4f2a9c1"                  # a commit hash, a tag or a branch of the re
 commit = "v2.0"
 event = "Release 2.0"               # optional: an event, at the date of this commit
 
-# Events at a date of their own (also possible by hand in codebase_analysis/history.jsonl)
+# Events at a date of their own
 [[events]]
 date = "2025-09-01"
 event = "Two developers joined"

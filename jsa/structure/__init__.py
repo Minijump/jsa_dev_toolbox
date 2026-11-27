@@ -2,9 +2,9 @@
 for the commit that broke a test; mutation testing (what the tests run without checking it)."""
 import typer
 
-from . import bisect, codebase, mutation
+from . import backfill, bisect, codebase, mutation
 
 
 def register(app: typer.Typer):
-    for module in (codebase, bisect, mutation):
+    for module in (codebase, backfill, bisect, mutation):
         module.register(app)

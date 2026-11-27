@@ -103,7 +103,7 @@ def test_enterprise_dependencies(tmp_path):
     assert report.compute_diff(old, new)["enterprise_added"] == [("a", ["web_studio"])]
     never_checked = {"a": {"depends": ["web_studio"]}}
     assert report.compute_diff(never_checked, new)["enterprise_added"] == []  # first check: not a change
-    html = report_html.render(new, report.summarize(new), None, None, None, [], {}, {"generated_at": "2026-01-01T10:00:00"})
+    html = report_html.render(new, report.summarize(new), None, None, None, [], [], {}, {"generated_at": "2026-01-01T10:00:00"})
     for expected in ('<h2>Dependencies on Odoo enterprise</h2><span class="psum">1 modules, 2 addons</span>', "through a",
                      "Needs Odoo enterprise"):
         assert expected in html
@@ -114,7 +114,7 @@ def test_problem_with_all_the_addons_is_failing():
     other = {"coverage": 80, "tests": 2, "failed": [], "whole": {"coverage": 90, "tests": 2, "failed": ["T.with_a"]}}
     assert report.status(entry) == report.status(other) == "failing"
     state = {"a": {**entry, "loc": 1, "depends": []}, "b": {**other, "loc": 1, "depends": ["a"]}}
-    page = report_html.render(state, report.summarize({}), None, None, None, [], {},
+    page = report_html.render(state, report.summarize({}), None, None, None, [], [], {},
                               {"generated_at": "2026-01-01T10:00:00",
                                "standard_tests": {"date": "2026-01-01T10:00:00",
                                                   "modules": {"sale": {"tests": 40, "failed": ["TestSale.test_a"]}}}})
@@ -182,41 +182,35 @@ def test_dot_hides_or_dots_the_duplicate_links():
     shown = report.build_dot(loc, deps, duplicates=duplicates, show_duplicates=True)
     assert '"a" -> "c"' not in hidden and '"a" -> "b";' in hidden and '"b" -> "c";' in hidden
     assert '"a" -> "c" [style=dotted];' in shown and '"a" -> "b";' in shown
-    page = report_html.render({}, report.summarize({}), None, None, None, [],
+    page = report_html.render({}, report.summarize({}), None, None, None, [], [],
                               {"custom": "<svg>1</svg>", "all": "<svg>2</svg>", "custom_dup": "<svg>3</svg>",
                                "all_dup": "<svg>4</svg>", "duplicates": ["a->c"]}, {"generated_at": "2026-01-01T10:00:00"})
     for expected in ('id="graph-custom"><svg>1', 'id="graph-all-dup"><svg>4', 'id="dup"', '"duplicates": ["a->c"]'):
         assert expected in page
 
 
-def test_one_trend_two_lines_and_the_old_lines_of_the_history(tmp_path):
-    run = lambda day, version, coverage, whole, **more: {"date": f"2026-10-{day:02d}T10:00", "odoo": version,
-                                                         "coverage": coverage, "coverage_whole": whole, "failed": 1,
-                                                         "failed_whole": 2, "not_installable": 0, "loc": 100, **more}
-    # before 0.37, a run had a mode: kept as it is in the history, read as the values of that way of measuring; the
-    # two lines of one commit (jsa backfill measured it in modes whole and isolated) are one run
-    old = lambda day, mode, coverage, **more: {"date": f"2026-10-{day:02d}T10:00", "mode": mode, "odoo": 17,
-                                              "coverage": coverage, "failed": 0, "not_installable": 0, "loc": 90, **more}
-    history = [old(1, "whole", 50.0), old(2, "isolated", 40.0, commit="abc"), old(2, "whole", 55.0, commit="abc"),
-               old(3, "both", 42.0), run(4, 19, 60.0, 70.0), run(5, 19, 61.0, 72.0)]
-    runs = report.runs_and_events(history)[0]
-    assert [(r.get("coverage"), r.get("coverage_whole")) for r in runs] == [
-        (None, 50.0), (40.0, 55.0), (42.0, None), (60.0, 70.0), (61.0, 72.0)]
-    assert history[0]["coverage"] == 50.0  # the history itself is not changed
-    page = report_html._trend(history)
+def test_one_trend_of_the_recorded_commits_two_lines(tmp_path):
+    run = lambda day, version, coverage, whole, **more: {"commit": f"{day:040d}", "code_date": f"2026-10-{day:02d}T10:00",
+                                                         "date": "2026-11-27T10:00", "odoo": version, "coverage": coverage,
+                                                         "coverage_whole": whole, "failed": 1, "failed_whole": 2,
+                                                         "not_installable": 0, "loc": 100, **more}
+    runs = [run(5, 19, 61.0, 72.0), run(1, 17, 50.0, 55.0), run(4, 19, 60.0, 70.0)]  # in any order: by their date
+    page = report_html._trend(runs, hidden=2)
     assert "<select" not in page and "series" not in page  # one trend
+    assert '<span class="psum">3 commits recorded, from 2026-10-01 to 2026-10-05 (2 recorded in other branches not shown)' in page
     coverage = page[page.index('data-chart="coverage"'):page.index('data-chart="loc"')]
     zoomed = coverage[:coverage.index('class="chart full"')]  # each chart drawn twice: zoomed (shown) and from 0
-    assert zoomed.count('class="dot"') == 4 and zoomed.count('class="dot l1"') == 4  # per module, whole (dashed)
+    assert zoomed.count('class="dot"') == 3 and zoomed.count('class="dot l1"') == 3  # per module, whole (dashed)
     assert zoomed.count("<polyline") == 2 and '<polyline class="l1"' in zoomed
     assert '<span class="tnow">61%</span><span class="tnote">whole 72%</span>' in coverage  # the last values
     assert '<span class="lines"><span><i></i>per module</span><span><i class="l1"></i>whole</span></span>' in coverage
-    assert "<title>2026-10-04 10:00 · Odoo 19: per module 60%, whole 70%</title>" in zoomed  # both in its tooltip
-    assert "<title>2026-10-01 10:00 · Odoo 17: whole 50%</title>" in zoomed
+    assert f"<title>2026-10-04 10:00 · {'0' * 36}0004 · Odoo 19 (measured 2026-11-27): per module 60%, whole 70%</title>" \
+        .replace(f"{'0' * 36}0004", f"{4:040d}"[:9]) in zoomed  # its commit, both values in its tooltip
     assert "<title>Odoo 17 → 19</title>" in coverage  # every Odoo version on the same curve, a line where it changes
     loc = page[page.index('data-chart="loc"'):page.index('data-chart="failed"')]
     assert '<span class="lines">' not in loc and loc.count("<polyline") == 2  # one line (drawn twice: zoomed, from 0)
-    assert report_html._trend([run(1, 19, 70.0, 75.0)]) == ""  # one run: no trend yet
+    one = report_html._trend([run(1, 19, 70.0, 75.0)])
+    assert '<span class="psum">1 commit recorded</span>' in one and "<code>jsa backfill</code>" in one  # how to record
     release = tmp_path / "odoo" / "release.py"
     release.parent.mkdir()
     release.write_text("version_info = (19, 0, 0, FINAL, 0, '')\n")
@@ -226,6 +220,30 @@ def test_one_trend_two_lines_and_the_old_lines_of_the_history(tmp_path):
     assert odoo.major_version({"odoo_root": str(tmp_path / "nowhere")}) is None
 
 
+def test_the_trend_shows_the_recorded_commits_of_the_branch(tmp_path):
+    record = lambda commit, day, coverage: {"commit": commit, "code_date": f"2026-10-{day:02d}T10:00", "coverage": coverage,
+                                            "coverage_whole": coverage, "loc": 10, "failed": 0, "not_installable": 0}
+    for run in (record("a" * 40, 1, 50.0), record("b" * 40, 2, 55.0), record("f" * 40, 3, 90.0)):
+        report.save_run(tmp_path, run)
+    (tmp_path / "backfill.toml").write_text('[[events]]\ndate = "2026-10-02T09:00"\nevent = "Release 2.0"\n')
+    branch = {"branch": "main", "commit": "b" * 40, "date": "2026-10-02T10:00:00", "dirty": False, "commits": {"a" * 40, "b" * 40}}
+    from jsa.core import config
+    old_toolbox, old_project = config.TOOLBOX_DIR, config.PROJECT_DIR
+    config.TOOLBOX_DIR, config.PROJECT_DIR = tmp_path, None
+    try:
+        report.write_reports({"x": 10}, {"x": []}, {"x": Result(80, tests=1, statements=10, covered=8)}, tmp_path,
+                             run={"profile": "19"}, branch=branch)
+    finally:
+        config.TOOLBOX_DIR, config.PROJECT_DIR = old_toolbox, old_project
+    page = (tmp_path / "report.html").read_text(encoding="utf-8")
+    assert '<p class="meta small">branch <strong>main</strong> · commit bbbbbbbbb of 2026-10-02 10:00</p>' in page
+    trend = page[page.index('id="trends"'):page.index('id="security"') if 'id="security"' in page else page.index("<h2>Addons")]
+    assert "2 commits recorded" in trend and "(1 recorded in other branches not shown)" in trend  # f... is elsewhere
+    assert "<title>Release 2.0</title>" in trend  # the events of backfill.toml
+    # the tiles: compared with the most recent recorded commit, not with the commit of the code itself (the same code)
+    assert 'title="Compared with the most recent recorded commit">+30.0 pts since last run' in page
+
+
 def test_a_chart_of_two_lines_keeps_their_last_labels_apart():
     chart = report_html.line_chart("Coverage", [("a", (60.0, 60.5)), ("b", (61.0, 61.0))], "%", 100, True,
                                    names=report_html.LINES)
@@ -233,22 +251,21 @@ def test_a_chart_of_two_lines_keeps_their_last_labels_apart():
     assert len(ys) == 2 and abs(ys[0] - ys[1]) >= 13
 
 
-def test_tiles_compare_the_measures_with_the_previous_run():
-    run = lambda coverage, failed, loc, **more: {"date": "2026-10-25T10:00", "odoo": 19, "coverage": coverage,
-                                                 "failed": failed, "not_installable": 0, "no_tests": 0, "addons": 2,
-                                                 "loc": loc, **more}
-    # a run of jsa 0.36 in mode whole, then one in mode isolated: each value compares with the last run that has it
-    history = [run(39.0, 4, 100, coverage_whole=50.0, failed_whole=3, not_installable_whole=0),
-               {**run(None, None, 100, mode="whole"), "coverage": 50.0, "failed": 3, "not_installable": 0},
-               run(40.0, 2, 100, mode="isolated"),
-               run(43.0, 1, 110, coverage_whole=52.5, failed_whole=1, not_installable_whole=1)]  # the last: this run
-    summary = {**history[-1], "tests": 9, "measured": 2, "enterprise": None}
-    previous_report = run(40.0, 2, 100)
+def test_tiles_compare_the_measures_with_the_most_recent_recorded_commit():
+    run = lambda day, coverage, failed, loc, **more: {"commit": f"{day:040d}", "code_date": f"2026-10-{day:02d}T10:00",
+                                                      "odoo": 19, "coverage": coverage, "failed": failed,
+                                                      "not_installable": 0, "no_tests": 0, "addons": 2, "loc": loc, **more}
+    # recorded in any order: the most recent commit is what the measures compare with
+    runs = [run(20, 40.0, 2, 100, coverage_whole=50.0, failed_whole=3, not_installable_whole=0),
+            run(5, 10.0, 9, 100, coverage_whole=10.0, failed_whole=9, not_installable_whole=5)]
+    summary = {**run(27, 43.0, 1, 110, coverage_whole=52.5, failed_whole=1, not_installable_whole=1), "tests": 9,
+               "measured": 2, "enterprise": None}
+    previous_report = run(26, 40.0, 2, 100)
     tiles_of = lambda page: page[page.index('<div class="tiles">'):page.index('</div></div>', page.index('Enterprise dependencies'))]
-    tiles = tiles_of(report_html.render({}, summary, previous_report, None, None, history, {},
-                                        {"generated_at": "2026-10-25T10:00:00", "measured": True, "profile": "19", "odoo": 19}))
+    tiles = tiles_of(report_html.render({}, summary, previous_report, None, None, runs, [], {},
+                                        {"generated_at": "2026-10-27T10:00:00", "measured": True, "profile": "19", "odoo": 19}))
     # per module in the value, whole under it; the change in a few words, what it is compared with in its tooltip
-    previous = '<span title="Compared with the previous run">'
+    previous = '<span title="Compared with the most recent recorded commit">'
     assert f'{previous}+3.0 pts since last run</span>' in tiles
     assert f'whole: 52% ({previous}+2.5 pts</span>)' in tiles
     assert f'1 failed ({previous}-1</span>)' in tiles and f'whole: 1 failed ({previous}-2</span>)' in tiles
@@ -259,7 +276,7 @@ def test_tiles_compare_the_measures_with_the_previous_run():
     # at most two lines under each value
     assert all(tile.count('class="sub"') <= 2 for tile in tiles.split('class="tile"'))
     # a report that measured nothing compares no measure
-    tiles = tiles_of(report_html.render({}, summary, previous_report, None, None, history, {}, {"generated_at": "2026-10-25T10:00:00"}))
+    tiles = tiles_of(report_html.render({}, summary, previous_report, None, None, runs, [], {}, {"generated_at": "2026-10-25T10:00:00"}))
     assert "pts since" not in tiles and "+10 since last run" in tiles
 
 
@@ -270,10 +287,9 @@ def _run(day, coverage, loc, todo=None, **more):
 
 
 def test_trend_charts_one_under_the_other_coverage_and_lines_of_code_open():
-    history = [_run(1, 60.0, 12000, todo=40), {"date": "2026-10-02", "event": "Release 2.0"},
-               {"date": "2026-09-01", "event": "Before the first run"}, {"date": "not a date", "event": "Broken"},
-               _run(3, 62.0, 12480, todo=31)]
-    page = report_html._trend(history, ["TODO", "Not recorded yet"])
+    runs = [_run(1, 60.0, 12000, todo=40), _run(3, 62.0, 12480, todo=31)]
+    events = [{"date": "2026-10-02", "event": "Release 2.0"}, {"date": "2026-09-01", "event": "Before the first run"}]
+    page = report_html._trend(runs, events, ["TODO", "Not recorded yet"])
     order = [page.index(f'data-chart="{key}"') for key in ("coverage", "loc", "tests", "failed", "not_installable",
                                                            "no_tests", "addons", "m0", "m1")]
     assert order == sorted(order)
@@ -282,12 +298,10 @@ def test_trend_charts_one_under_the_other_coverage_and_lines_of_code_open():
     assert 'data-chart="enterprise"' not in page  # never measured: no chart
     assert '<span class="tname">Lines of code</span><span class="tnow">12,480</span></summary>' in page  # the last value only
     assert "since" not in page
-    assert "recorded from the next run measuring the coverage (-c)" in page[page.index('data-chart="m1"'):]
+    assert "counted on the recorded commits by the next jsa backfill" in page[page.index('data-chart="m1"'):]
     # the event between the two runs is drawn on every chart, the one before the first run is not
     # (each chart is drawn twice: zoomed on its values, and from 0)
-    assert page.count("<title>Release 2.0</title>") == 16 and "Before the first run" not in page and "Broken" not in page
-    runs, events = report.runs_and_events(history)
-    assert len(runs) == 2 and [e["event"] for e in events] == ["Release 2.0", "Before the first run"]
+    assert page.count("<title>Release 2.0</title>") == 16 and "Before the first run" not in page
     assert report_html.event_positions([report.parse_date("2026-10-01"), report.parse_date("2026-10-03")],
                                        [{"date": "2026-10-02", "event": "x"}, {"date": "2026-10-03", "event": "y"}]) == [(0.5, "x"), (1.0, "y")]
 
@@ -300,17 +314,17 @@ def test_charts_shown_and_unfolded_chosen_in_config(capsys):
     order = lambda page: sorted((key for key in ("m0", "coverage", "failed", "tests", "loc") if f'data-chart="{key}"' in page),
                                 key=lambda key: page.index(f'data-chart="{key}"'))
     choice = choose({"trends": ["tests", "TODO", "coverage", "failed"], "trends_open": ["failed", "TODO"]})
-    page = report_html._trend(runs, ["TODO"], choice)
+    page = report_html._trend(runs, measures=["TODO"], choice=choice)
     # the unfolded first, in the order of trends_open; then the folded, in the order of trends
     assert order(page) == ["failed", "m0", "tests", "coverage"]
     assert 'data-chart="loc"' not in page  # not listed: not shown
     assert 'data-chart="m0" open>' in page and 'data-chart="failed" open>' in page and 'data-chart="coverage">' in page
-    page = report_html._trend(runs, ["TODO"], choose({"trends": ["failed", "TODO", "loc", "coverage"]}))
+    page = report_html._trend(runs, measures=["TODO"], choice=choose({"trends": ["failed", "TODO", "loc", "coverage"]}))
     assert order(page) == ["coverage", "loc", "failed", "m0"]  # the default unfolded ones (coverage, loc) first
     # only trends_open set: every chart shown, these unfolded
-    page = report_html._trend([_run(1, 60.0, 12000), _run(3, 62.0, 12480)], [], choose({"trends_open": ["tests"]}))
+    page = report_html._trend([_run(1, 60.0, 12000), _run(3, 62.0, 12480)], choice=choose({"trends_open": ["tests"]}))
     assert 'data-chart="tests" open>' in page and 'data-chart="coverage">' in page and 'data-chart="loc">' in page
-    assert report_html._trend([_run(1, 60.0, 12000), _run(3, 62.0, 12480)], [], {"trends": []}) == ""
+    assert report_html._trend([_run(1, 60.0, 12000), _run(3, 62.0, 12480)], choice={"trends": []}) == ""
     for wrong, why in (({"trends": ["coverag"]}, "no chart named 'coverag'. The charts: coverage, loc,"),
                        ({"trends_open": "coverage"}, "trends_open must be a list of chart names"),
                        ({"trend": ["coverage"]}, "has the key(s) trend, which do not exist"),
@@ -324,9 +338,9 @@ def test_charts_shown_and_unfolded_chosen_in_config(capsys):
 
 def test_trend_in_the_order_of_the_code_measured():
     # old commits measured today, newest first: each run is placed at the date of its code
-    history = [_run(20, 70.0, 13000), _run(21, 50.0, 10000, code_date="2025-11-15T09:00:00"),
-               _run(22, 60.0, 11500, code_date="2026-05-10T17:30:00"), {"date": "2026-01-01", "event": "Release 2.0"}]
-    page = report_html._trend(history)
+    runs = [_run(20, 70.0, 13000), _run(21, 50.0, 10000, code_date="2025-11-15T09:00:00"),
+            _run(22, 60.0, 11500, code_date="2026-05-10T17:30:00")]
+    page = report_html._trend(runs, [{"date": "2026-01-01", "event": "Release 2.0"}])
     loc = page[page.index('data-chart="loc"'):page.index('data-chart="tests"')]
     assert '<polyline points="48.0,' in loc
     ys = [float(p.split(",")[1]) for p in loc.split('<polyline points="')[1].split('"')[0].split()]
@@ -415,20 +429,18 @@ def test_measures_of_config_counted_in_the_code(tmp_path, capsys):
 def test_state_history_and_report_files(tmp_path):
     assert report.load_state(tmp_path) == ({}, None)  # no previous run
     results = {"a": Result(60, tests=5, failed=["T.new"], statements=100, covered=60, files={"models/x.py": "3-5"}), "new": None}
-    for _ in range(2):  # two measured runs: the trend appears
-        report.write_reports({"a": 15, "new": 3}, {"a": ["base"], "new": []}, results, tmp_path,
-                             run={"mode": "whole", "profile": "17"}, measures={"TODO comments": 4})
-    assert all(line["measures"] == {"TODO comments": 4} for line in report.load_history(tmp_path / "history.jsonl"))
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["history.jsonl", "report.html", "state.json"]
+    for _ in range(2):  # measured twice: nothing recorded in the history (only jsa backfill records)
+        record = report.write_reports({"a": 15, "new": 3}, {"a": ["base"], "new": []}, results, tmp_path,
+                                      run={"profile": "17"}, measures={"TODO comments": 4})
+    assert record["measures"] == {"TODO comments": 4} and record["coverage"] == 60.0 and record["profile"] == "17"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["report.html", "state.json"]
+    assert report.write_reports({"a": 15}, {"a": []}, {"a": None}, tmp_path / "other") is None  # nothing measured
     state, _ = report.load_state(tmp_path)
     assert state["a"]["failed"] == ["T.new"] and state["new"]["coverage"] is None
     assert Result.from_state(state["a"]) == results["a"]
-    assert len(report.load_history(tmp_path / "history.jsonl")) == 2
-    (tmp_path / "history.jsonl").write_text("not json\n" + (tmp_path / "history.jsonl").read_text())
-    assert len(report.load_history(tmp_path / "history.jsonl")) == 2  # a line broken by hand is ignored
     html = (tmp_path / "report.html").read_text(encoding="utf-8")
-    for expected in ("Needs attention", "T.new", "models/x.py", "3-5", "Trend of the measured runs", "60%", "Not measured",
-                     '<span class="tname">TODO comments</span>'):
+    for expected in ("Needs attention", "T.new", "models/x.py", "3-5", "60%", "Not measured",
+                     '<h2>Trend of the recorded commits</h2><span class="psum">no commit recorded yet</span>'):
         assert expected in html
 
 
@@ -466,9 +478,9 @@ def test_structure_measures_per_module_then_whole(tmp_path, monkeypatch):
     state, _ = report.load_state(out)
     assert state["b"]["coverage"] == 60 and state["b"]["whole"]["failed"] == ["T.with_a"]
     assert "files" not in state["b"]["whole"] and state["b"]["files"] == {"m.py": "3"}  # uncovered lines: per module
-    line = report.load_history(out / report.HISTORY_FILE)[-1]
+    line = run  # what jsa backfill records
     assert (line["coverage"], line["coverage_whole"], line["failed"], line["failed_whole"]) == (60.0, 75.0, 0, 1)
-    assert "mode" not in line
+    assert not (out / "runs").exists()  # jsa structure records nothing
     # nothing changed: nothing runs, the whole measure is kept too
     calls.clear()
     assert analyse() is None and calls == [] and report.load_state(out)[0]["b"]["whole"]["coverage"] == 70
@@ -481,9 +493,8 @@ def test_structure_measures_per_module_then_whole(tmp_path, monkeypatch):
     assert report.load_state(out)[0]["a"]["whole"]["coverage"] == 80
     # all or nothing (jsa backfill): nothing installs together, whole counts as 0%, the measures per module stay
     calls.clear()
-    analyse(measure_all=True, all_or_nothing=True)
+    line = analyse(measure_all=True, all_or_nothing=True)
     assert calls == [("isolated", ["a", "b"], False), ("whole", ["a", "b"], True)]
-    line = report.load_history(out / report.HISTORY_FILE)[-1]
     assert (line["coverage"], line["coverage_whole"], line["not_installable_whole"]) == (60.0, 0.0, 2)
 
 

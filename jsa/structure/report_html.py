@@ -1,8 +1,8 @@
 """The codebase report page: one self-contained HTML file (no network, no external library).
 
-Sections: totals, what needs attention, changes since the previous run, the security review (security.py), one
-sortable table of the addons (details on click), the dependency graph (with or without standard modules) and the trend
-of the measured runs.
+Sections: totals, what needs attention, then folded the trend of the commits recorded by jsa backfill, the security
+review (security.py), mutation testing, the dependencies on Odoo enterprise, the tests of the standard modules; then
+one sortable table of the addons (details on click) and the dependency graph (with or without standard modules).
 Coverage is a continuous color from red (0%) to green (100%). States use a symbol + a label, never the color alone.
 """
 import json
@@ -56,7 +56,7 @@ CSS = """
 body{margin:0;background:var(--page);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
 main{max-width:1280px;margin:0 auto;padding:24px 20px 60px}
 h1{font-size:22px;margin:0}h2{font-size:16px;margin:0 0 12px}
-.meta{color:var(--ink2);margin:4px 0 20px}
+.meta{color:var(--ink2);margin:4px 0 20px}.meta.small{font-size:12px;margin:-16px 0 20px}
 section{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:16px}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:16px}
 .tile{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
@@ -363,13 +363,13 @@ def _delta(new, old, unit: str = "", decimals: int = 0, compared: str = "the pre
 def _tiles(summary: dict, old: Optional[dict], earlier: list[dict] = ()) -> str:
     """`old`: the summary of the previous report, for what does not depend on the tests (addons, lines of code).
     `earlier`: the runs before this one, for the measures (none when this report did not measure anything): each is
-    compared with the last run that has it (a run of jsa 0.36 or older measured per module or whole only).
+    compared with the most recent recorded commit (jsa backfill) that has it.
     Each tile: a label, the value (per module), at most two short lines (the change since the last run, the value
     whole: all the addons installed and tested together)."""
     old = old or {}
     last = lambda key: next((r[key] for r in reversed(earlier) if r.get(key) is not None), None)
     measure = lambda key, unit="", decimals=0, short=False: _delta(summary.get(key), last(key), unit, decimals,
-                                                                   "the previous run", short)
+                                                                   "the most recent recorded commit", short)
     report_delta = lambda key: _delta(summary[key], old.get(key))
     with_change = lambda text, change: text + (f" ({change})" if change else "")
     whole = lambda key, text: (with_change(f"whole: {text.format(summary[key])}", measure(key, " pts" if "%" in text else "",
@@ -937,7 +937,7 @@ def _trend_section(key: str, title: str, unit: str, is_open: bool, runs: list[di
     points = [(r, value_of(r)) for r in runs if has(value_of(r))]
     head = f'<details class="trend" data-chart="{key}"{" open" if is_open else ""}><summary><span class="tname">{E(title)}</span>'
     if not points:
-        return (head + '<span class="tnow">–</span><span class="tnote">recorded from the next run measuring the coverage (-c)</span>'
+        return (head + '<span class="tnow">–</span><span class="tnote">counted on the recorded commits by the next jsa backfill</span>'
                        '</summary></details>') if custom else ""
     label = lambda r: str(r.get('code_date') or r.get('date', ''))[:16].replace('T', ' ')
     if names:  # the last value of each line: per module in the title, whole next to it
@@ -950,11 +950,11 @@ def _trend_section(key: str, title: str, unit: str, is_open: bool, runs: list[di
     if len(points) == 1:
         return head + f'<span class="tnote">one run so far ({E(label(points[0][0]))})</span></summary></details>'
     # the tooltip gives the Odoo version, and both dates for a run measured after its code was written (an old commit)
-    tip = lambda r: label(r) + (f" · Odoo {r['odoo']}" if r.get('odoo') else "") + (
-        f" (measured {str(r['date'])[:10]})" if r.get('code_date') and str(r['code_date'])[:10] != str(r.get('date', ''))[:10] else "") + (
+    tip = lambda r: label(r) + (f" · {r['commit'][:9]}" if r.get('commit') else "") + (f" · Odoo {r['odoo']}" if r.get('odoo') else "") + (
+        f" (measured {str(r['date'])[:10]})" if r.get('code_date') and r.get('date') and str(r['code_date'])[:10] != str(r['date'])[:10] else "") + (
         f" · {detail(r)}" if detail and detail(r) else "")
     dates = [code_date(r) for r, _ in points]
-    marks = event_positions(dates, events + version_changes([r for r, _ in points])) if all(dates) else []
+    marks = event_positions(dates, list(events) + version_changes([r for r, _ in points])) if all(dates) else []
     chart = lambda zoom: line_chart(title, [(label(r), v, tip(r)) for r, v in points], unit, 100 if unit == "%" else None,
                                     zoom, marks, "zoomed" if zoom else "full", names)
     legend = ('<span class="lines">' + "".join(f'<span><i{f" class={chr(34)}l{n}{chr(34)}" if n else ""}></i>{E(name)}</span>'
@@ -989,10 +989,11 @@ def _findings_detail(run: dict, reviewed: dict, off=()) -> str:
     return ", ".join(f"{title}: {n}" for title, n in counts if n)
 
 
-def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict] = None,
-           reviewed: Optional[dict] = None, off=()) -> str:
-    """The trend of the measured runs: every run on the same charts, whatever its Odoo version (a dashed line where
-    it changes); coverage, failed tests and not installable addons have two lines, per module and whole.
+def _trend(runs: list[dict], events: list[dict] = (), measures: list[str] = (), choice: Optional[dict] = None,
+           reviewed: Optional[dict] = None, off=(), hidden: int = 0) -> str:
+    """The trend of the commits recorded by jsa backfill (`runs`, those of the branch; `hidden`: those of other
+    branches), on the same charts whatever their Odoo version (a dashed line where it changes); coverage, failed
+    tests and not installable addons have two lines, per module and whole. `events`: {date, event} (backfill.toml).
     `measures`: the labels of [[report.measures]]. `choice`: [report] trends (the charts shown: by default all, the
     measures last) and trends_open (unfolded at first: by default coverage and lines of code). The unfolded charts
     come first in the order of trends_open, then the others in the order of trends. `reviewed`: the security findings
@@ -1003,11 +1004,19 @@ def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict]
     unfolded = set(opened)
     # the unfolded charts first, in the order of trends_open, then the folded ones in the order of trends
     shown_charts = opened + [name for name in listed if name not in unfolded]
-    runs, events = report.runs_and_events(history)
-    runs.sort(key=lambda r: code_date(r) or datetime.min)  # in the order of their code, whatever the order measured
+    runs = sorted(runs, key=lambda r: code_date(r) or datetime.min)  # in the order of their code
     count, runs = len(runs), runs[-30:]
-    if not shown_charts or len(runs) < 2:
+    elsewhere = f" ({hidden} recorded in other branches not shown)" if hidden else ""
+    how = ('The trend shows the commits recorded with <code>jsa backfill</code>: list in <code>backfill.toml</code> '
+           'the commits to record (a release, the first of each month...) and the events (<code>[[events]]</code> date '
+           'and event, or <code>event</code> on a commit), then run <code>jsa backfill</code>. '
+           '<code>jsa structure</code> never adds to it.')
+    if not shown_charts:
         return ""
+    if len(runs) < 2:
+        return _part('trends', 'Trend of the recorded commits',
+                     (f"{count} commit recorded" if count else "no commit recorded yet") + elsewhere,
+                     f'<p class="meta" style="margin:0">{how} Two recorded commits make a trend.</p>')
     builtin = {key: (title, unit, both) for key, title, unit, both in TREND_CHARTS}
 
     def section(name: str) -> str:
@@ -1028,25 +1037,24 @@ def _trend(history: list[dict], measures: list[str] = (), choice: Optional[dict]
         return ""  # a measure removed from config.toml
 
     last, day = runs[-1], lambda r: str(r.get('code_date') or r.get('date', ''))[:10]
-    facts = [f"{count} runs, from {day(runs[0])} to {day(last)}"]
+    facts = [f"{count} commits recorded, from {day(runs[0])} to {day(last)}{elsewhere}"]
     if last.get('coverage') is not None:
         facts.append(f"coverage {number(last['coverage'])}%" + (f" (whole {number(last['coverage_whole'])}%)"
                                                                if last.get('coverage_whole') is not None else ""))
     if last.get('loc') is not None:
         facts.append(f"{last['loc']:,} lines of code")
-    return _part('trends', 'Trend of the measured runs', " · ".join(facts), "".join(section(name) for name in shown_charts)
-            + '<p class="meta" style="margin:8px 0 0">One point per run that measured the coverage, every Odoo version '
-            'together (a dashed line where it changes), at the date of the code measured: its last commit (the date of the '
-            'run when it had uncommitted changes), so measuring old commits fills the past. Two lines for what is measured '
-            'both ways: <strong>per module</strong> (each addon alone with its dependencies, its own tests) and '
-            '<strong>whole</strong> (all the addons installed and tested together, like production). '
-            'Click a title to fold or unfold its chart. Each chart is zoomed on its values: "Axis from 0" draws it from '
-            '0. To forget a run, delete its line in <code>history.jsonl</code>; to mark an event (a release, someone '
-            'joining the team), add a line there: <code>{"date": "2026-11-01", "event": "Release 2.0"}</code>.</p>')
+    return _part('trends', 'Trend of the recorded commits', " · ".join(facts), "".join(section(name) for name in shown_charts)
+            + f'<p class="meta" style="margin:8px 0 0">One point per recorded commit of this branch, at its date, every '
+            'Odoo version together (a dashed line where it changes). Two lines for what is measured both ways: '
+            '<strong>per module</strong> (each addon alone with its dependencies, its own tests) and <strong>whole</strong> '
+            '(all the addons installed and tested together, like production). Click a title to fold or unfold its chart. '
+            f'Each chart is zoomed on its values: "Axis from 0" draws it from 0. {how} To forget a commit, take it out of '
+            '<code>backfill.toml</code>.</p>')
 
 
 def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Optional[dict], old_date: Optional[str],
-           history: list[dict], graphs: dict, meta: dict) -> str:
+           runs: list[dict], events: list[dict], graphs: dict, meta: dict) -> str:
+    """`runs`: the commits recorded by jsa backfill in the branch of the code, `events` those of backfill.toml."""
     measured = lambda e: isinstance(e.get('coverage'), int) and e['coverage'] >= 0
     enterprise = report.enterprise_dependencies(state)
     data = {'addons': {name: {'status': report.status(e), 'color': coverage_color(e['coverage']) if measured(e) else None,
@@ -1054,9 +1062,15 @@ def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Option
             'enterprise': sorted({module for e in state.values() for module in e.get('enterprise') or []}),
             'duplicates': graphs.get('duplicates', [])}
     when = meta['generated_at'][:16].replace('T', ' ')
-    # measured now: the measures are compared with the runs before (the last run of the history is this one)
-    runs = report.runs_and_events(history)[0]
-    earlier = runs[:-1] if meta.get('measured') else []
+    # measured now: the measures are compared with the most recent recorded commit of the branch (not the commit of
+    # the code itself when it has no change: it is the same code)
+    branch = meta.get('branch') or {}
+    runs = sorted(runs, key=lambda r: code_date(r) or datetime.min)
+    earlier = [r for r in runs if not (r['commit'] == branch.get('commit') and not branch.get('dirty'))] \
+        if meta.get('measured') else []
+    where = (f'<p class="meta small">{"branch <strong>" + E(branch["branch"]) + "</strong> · " if branch.get("branch") else ""}'
+             f'commit {E(branch["commit"][:9])} of {E(branch["date"][:16].replace("T", " "))}'
+             + (' · with uncommitted changes' if branch.get('dirty') else '') + '</p>') if branch.get('commit') else ""
     if meta.get('measured'):
         how = (f"coverage measured per module and whole with profile <strong>{E(str(meta['profile']))}</strong>")
     elif summary['measured']:
@@ -1077,17 +1091,18 @@ def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Option
     return "".join([
         '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
         f'<title>Codebase report</title><style>{CSS}</style><style id="graph-css">{GRAPH_CSS}</style></head><body><main>',
-        f'<h1>Codebase report</h1><p class="meta">Generated {E(when)} · {how}</p>',
+        f'<h1>Codebase report</h1><p class="meta">Generated {E(when)} · {how}</p>{where}',
         _tiles(summary, old_summary, earlier),
         _attention(state, summary, old_summary, diff, old_date, meta.get('standard_tests'),
                    (dict(fresh_findings), gone_findings), survivors),
-        _trend(history, meta.get('measures') or [], meta.get('trends'), reviewed, off),
+        _trend(runs, events, meta.get('measures') or [], meta.get('trends'), reviewed, off, meta.get('hidden_runs') or 0),
         _security(state, reviewed, before, off),
         _mutation(meta.get('mutation') or {}, meta.get('reviewed_changes') or {}),
         _enterprise(enterprise, dict((diff or {}).get('enterprise_added', []))), _standard(meta.get('standard_tests')),
         _table(state, enterprise, reviewed, meta.get('mutation'), diff, before), _graph(graphs),
         '<footer>Files next to this report: <code>state.json</code> (last results, reused for unchanged addons), '
-        '<code>history.jsonl</code> (one line per measured run), <code>coverage_odoo.log</code> (full Odoo log of the last measure).</footer>',
+        '<code>runs/</code> (one file per commit recorded by <code>jsa backfill</code>: the trend), '
+        '<code>coverage_odoo.log</code> (full Odoo log of the last measure).</footer>',
         '</main><script type="application/json" id="data">', json.dumps(data).replace("</", "<\\/"), '</script>',
         f'<script>{JS}</script></body></html>',
     ])

@@ -285,17 +285,17 @@ def test_the_report_lists_the_findings_and_the_chart_counts_those_not_reviewed(t
 
     # the history keeps the ids of each rule: the chart counts those not reviewed, with today's reviewed.toml
     state, _ = report.load_state(out)
-    run = {"date": "2026-11-24T10:00:00", "mode": "whole", "odoo": 19, "coverage": 50.0, "loc": 10,
+    run = {"code_date": "2026-11-24T10:00:00", "commit": "c" * 40, "odoo": 19, "coverage": 50.0, "loc": 10,
            **{"security": report.summarize(state)["security"]}}
     assert sum(len(ids) for ids in run["security"].values()) == 13
     assert report_html.open_findings(run, {sudo["id"]: "x"}) == 12 and report_html.open_findings({}, {}) is None
     assert report_html.open_findings(run, {sudo["id"]: "x"}, off=["eval"]) == 11  # a rule switched off: not counted
-    chart = report_html._trend([run, {**run, "date": "2026-11-25T10:00:00"}], [], None, {sudo["id"]: "x"})
+    chart = report_html._trend([run, {**run, "code_date": "2026-11-25T10:00:00"}], reviewed={sudo["id"]: "x"})
     section = chart[chart.index('data-chart="security"'):]
     assert '<span class="tname">Security findings to review</span><span class="tnow">12</span>' in section
     assert "sudo() in a method callable over RPC: 1" in section  # the tooltip: rule by rule
-    old_runs = report_html._trend([{**run, "security": None}, {**run, "security": None}], [])
-    assert "recorded from the next run measuring the coverage (-c)" in old_runs[old_runs.index('data-chart="security"'):]
+    old_runs = report_html._trend([{**run, "security": None}, {**run, "security": None}])
+    assert "counted on the recorded commits by the next jsa backfill" in old_runs[old_runs.index('data-chart="security"'):]
 
 
 def test_rules_switched_off_in_config(tmp_path, monkeypatch, capsys):
@@ -332,14 +332,3 @@ def test_counts_have_whole_ticks():
     assert report_html.zoomed_axis([0, 0])[2] == 0.5  # a measure in %: halves are fine
 
 
-def test_backfill_adds_the_review_to_the_commits_already_measured():
-    from plugins.backfill import missing_security, with_security
-    history = [{"commit": "a", "mode": "whole"}, {"commit": "a", "mode": "isolated", "security": {"eval": ["x"]}},
-               {"commit": "b", "mode": "whole", "security": None}, {"date": "2026-01-01", "event": "e", "commit": "a"},
-               {"mode": "whole"}]
-    assert missing_security(history, {"a", "b"}) == {"a", "b"}
-    assert missing_security(history, {"b"}) == {"b"}
-    found = {"a": {"sql_built": ["y"]}}
-    assert with_security(history[0], found) == {"commit": "a", "mode": "whole", "security": {"sql_built": ["y"]}}
-    assert with_security(history[1], found) == history[1]  # already reviewed: kept
-    assert with_security(history[3], found) == history[3]  # an event

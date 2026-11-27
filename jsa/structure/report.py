@@ -1,13 +1,12 @@
-"""Data of the codebase report: state of each addon, totals, changes since the previous run, history of the runs
-and layout of the dependency graph. The page itself is rendered by report_html.
+"""Data of the codebase report: state of each addon, totals, changes since the previous report, the recorded
+commits (the trend) and layout of the dependency graph. The page itself is rendered by report_html.
 
 Files written in the analysis folder:
 - report.html   the report (the only file to open)
 - state.json    last state of each addon; also the cache of the coverage measures
-- history.jsonl one line per measured run, for the trend charts (delete a line to forget a run). Lines added by
-                hand as {"date": "2026-11-01", "event": "Release 2.0"} are events: a vertical line on the charts.
-                The lines written before jsa measured each run both ways (0.37) are read as they are, see
-                runs_and_events.
+- runs/         one file per commit recorded by 'jsa backfill' (<commit>.json): the data of the trend. Only the
+                backfill writes there (the user, 2026-11-27: recording is done on purpose); delete a file to forget
+                a commit. The events of the trend are in backfill.toml.
 """
 import json
 import math
@@ -20,12 +19,13 @@ from typing import Optional
 
 import typer
 
+from ..core import config
 from . import report_html, security
 from .coverage import NOT_INSTALLABLE, Result
 
 REPORT_FILE = "report.html"
 STATE_FILE = "state.json"
-HISTORY_FILE = "history.jsonl"
+RUNS_FOLDER = "runs"  # one file per commit recorded by jsa backfill
 SCHEMA = 2  # version of the measures stored in the state: older ones are measured again
 
 
@@ -190,58 +190,52 @@ def compute_diff(old: dict, new: dict) -> dict:
     return diff
 
 
-# ---------- history ----------
-
-def load_history(history_file: Path) -> list[dict]:
-    runs = []
-    try:
-        lines = history_file.read_text(encoding='utf-8').splitlines()
-    except FileNotFoundError:
-        return runs
-    for line in lines:
-        try:
-            runs.append(json.loads(line))
-        except json.JSONDecodeError:
-            pass  # a line edited by hand: ignored
-    return runs
-
+# ---------- the recorded commits ----------
 
 def parse_date(text) -> Optional[datetime]:
-    """A date of the history ('2026-11-01' or '2026-11-01T10:28:14'), without time zone; None if not a date."""
+    """A date ('2026-11-01' or '2026-11-01T10:28:14'), without time zone; None if not a date."""
     try:
         return datetime.fromisoformat(str(text)).replace(tzinfo=None)
     except ValueError:
         return None
 
 
-WHOLE = ('coverage', 'failed', 'not_installable')  # measured per module and whole: '<key>_whole' in the history
+def runs_folder(out_dir: Path) -> Path:
+    return out_dir / RUNS_FOLDER
 
 
-def runs_and_events(history: list[dict]) -> tuple[list[dict], list[dict]]:
-    """The measured runs, in the order of the history, and the events added by hand ({"date": ..., "event": "what
-    happened"}, a valid date). The lines written before jsa measured each run both ways (0.37, the user: the history
-    stays as it is) had a mode: a run in mode 'whole' gives the whole values, 'isolated' or 'both' those per module;
-    the lines of one commit (jsa backfill measured it in both modes) make one run."""
-    runs, by_commit = [], {}
-    for line in history:
-        if line.get('event'):
+def load_runs(out_dir: Path) -> list[dict]:
+    """The commits recorded by jsa backfill, in the order of their code: {commit, code_date (its date), date (when it
+    was measured), profile, odoo, the totals of summarize, measures, event?}. Only what the trend draws: a few KB."""
+    runs = []
+    for path in sorted(runs_folder(out_dir).glob("*.json")):
+        try:
+            run = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
             continue
-        line = dict(line)
-        if line.get('mode') == 'whole':
-            line.update({f"{key}_whole": line.pop(key, None) for key in WHOLE})
-        if line.get('commit') in by_commit:
-            by_commit[line['commit']].update({k: v for k, v in line.items() if v is not None})
-            continue
-        if line.get('commit'):
-            by_commit[line['commit']] = line
-        runs.append(line)
-    events = [line for line in history if line.get('event') and parse_date(line.get('date'))]
-    return runs, events
+        if isinstance(run, dict) and run.get('commit'):
+            runs.append(run)
+    return sorted(runs, key=lambda r: parse_date(r.get('code_date')) or datetime.min)
 
 
-def append_history(history_file: Path, run: dict):
-    with open(history_file, 'a', encoding='utf-8') as f:
-        f.write(json.dumps(run) + "\n")
+def save_run(out_dir: Path, run: dict):
+    runs_folder(out_dir).mkdir(parents=True, exist_ok=True)
+    (runs_folder(out_dir) / f"{run['commit'][:12]}.json").write_text(json.dumps(run, indent=1), encoding='utf-8')
+
+
+def forget_run(out_dir: Path, commit: str):
+    (runs_folder(out_dir) / f"{commit[:12]}.json").unlink(missing_ok=True)
+
+
+def plan_events(path: Path) -> list[dict]:
+    """The [[events]] of backfill.toml with a valid date ({date, event}): drawn on the trend. A file that cannot be
+    read gives none here (jsa backfill says why)."""
+    try:
+        plan = config.tomllib.loads(path.read_text(encoding='utf-8'))
+    except (OSError, config.tomllib.TOMLDecodeError):
+        return []
+    return [{'date': str(e['date']), 'event': e['event']} for e in plan.get('events', [])
+            if isinstance(e, dict) and isinstance(e.get('event'), str) and parse_date(e.get('date'))]
 
 
 # ---------- dependency graph ----------
@@ -336,9 +330,11 @@ def load_standard_tests(out_dir: Path) -> Optional[dict]:
 def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Result]], out_dir: Path,
                   extra: Optional[dict] = None, run: Optional[dict] = None, standard: Optional[dict] = None,
                   measures: Optional[dict] = None, trends: Optional[dict] = None, reviewed: Optional[dict] = None,
-                  reviewed_changes: Optional[dict] = None, security_off: Optional[list] = None):
-    """`run` describes a coverage run ({'profile', 'odoo', 'code_date'}) when addons were measured now: it is added to
-    the history.
+                  reviewed_changes: Optional[dict] = None, security_off: Optional[list] = None,
+                  branch: Optional[dict] = None) -> Optional[dict]:
+    """`run` describes a coverage run ({'profile', 'odoo', 'code_date'}) when addons were measured now: its record
+    (what jsa backfill keeps of a commit: the totals, measures...) is returned, None when nothing was measured.
+    `branch`: the git branch of the code (codebase.branch_of): the trend shows the recorded commits of that branch.
     `standard`: the results of the standard modules' tests run now; else those of the last time they were run.
     `measures`: the counts of [[report.measures]] of config.toml ({label: count}), recorded with the run.
     `trends`: [report] trends / trends_open of config.toml, the charts shown and unfolded (none: the default).
@@ -361,8 +357,12 @@ def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Res
     if standard is not None:
         standard_tests = {'date': now, 'modules': standard}
     summary = summarize(new)
-    if run:
-        append_history(out_dir / HISTORY_FILE, {'date': now, **run, **summary, **({'measures': measures} if measures else {})})
+    record = {'date': now, **run, **summary, **({'measures': measures} if measures else {})} if run else None
+    # the trend: the commits recorded by jsa backfill in the history of the branch (those of other branches hidden)
+    runs = load_runs(out_dir)
+    shown = [r for r in runs if not branch or r['commit'] in branch['commits']]
+    events = ([{'date': r['code_date'], 'event': r['event']} for r in shown if r.get('event') and r.get('code_date')]
+              + plan_events(config.backfill_file()))
 
     typer.echo("🧭 Drawing the dependency graph...")
     # each picture has its own layout: without the duplicate links, it is drawn as if they did not exist
@@ -374,8 +374,10 @@ def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Res
         typer.echo("⚠️ graphviz 'dot' not found: report generated without the dependency graph (sudo apt install graphviz)")
 
     html = report_html.render(new, summary, summarize(old) if old else None, compute_diff(old, new) if old else None,
-                              old_date, load_history(out_dir / HISTORY_FILE), graphs,
+                              old_date, shown, events, graphs,
                               {'generated_at': now, **(run or {}), 'measured': bool(run), 'standard_tests': standard_tests,
+                               'branch': {k: v for k, v in (branch or {}).items() if k != 'commits'} or None,
+                               'hidden_runs': len(runs) - len(shown),
                                'measures': list(measures or {}), 'trends': trends or {}, 'reviewed': reviewed,
                                'security_before': before, 'mutation': load_mutation(out_dir),
                                'reviewed_changes': reviewed_changes or {}, 'security_off': security_off})
@@ -390,8 +392,7 @@ def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Res
                f"{summary['tests'] - summary['failed']}/{summary['tests']} tests passed" + whole('failed_whole', "{} failed")
                + f", {summary['not_installable']} not installable" + whole('not_installable_whole', "{}"))
     if measures:
-        typer.echo("📏 " + ", ".join(f"{label}: {count:,}" for label, count in measures.items())
-                   + ("" if run else " (the trends record them with the runs that measure the coverage, -c)"))
+        typer.echo("📏 " + ", ".join(f"{label}: {count:,}" for label, count in measures.items()))
     found = security_ids(new)
     if found is not None:
         to_review = found.keys() - reviewed.keys()
@@ -401,3 +402,4 @@ def write_reports(loc: dict, dependencies: dict, results: dict[str, Optional[Res
         typer.echo(f"🔒 Security review: {len(to_review) or 'nothing'} to review" + (f" ({change})" if change else "")
                    + (f", {len(found) - len(to_review)} reviewed" if len(found) > len(to_review) else ""))
     typer.echo(f"✅ Report: {out_dir / REPORT_FILE}")
+    return record

@@ -1,34 +1,27 @@
-"""Plugin: measure old commits of your addons, to fill the past of the trends of the codebase report.
+"""jsa backfill: record commits of your addons in the history of the codebase report (its trend).
 
-A plugin made of a folder: its code (this file), and its own file next to it, so nothing goes in config.toml:
+The history is made of the commits listed in backfill.toml (at the root of the toolbox; in a project, in its .jsa/
+folder), and only of them: 'jsa structure' never adds to it (the user's choice, 2026-11-27: adding to the history is
+done on purpose). Each recorded commit is a small file, codebase_analysis/runs/<commit>.json: what the trend draws
+(the totals of the report, the date of the commit, the Odoo version, the security findings, your measures).
 
-    plugins/backfill/
-        __init__.py       this code (part of the toolbox)
-        backfill.toml     the commits to measure and your events (yours: copy backfill.toml.sample)
-
-In a project (jsa init), its backfill.toml is in its .jsa/ folder, next to its reports.
-
-'jsa backfill' checks out each commit of backfill.toml in a temporary git worktree (your checkout is not touched),
-does what 'jsa structure -c' does (per module, then whole) with the profile running the Odoo version of that code
-(read in its manifests: '17.0.1.0.0' is Odoo 17), and adds the run to the history of the report at the date of the
-commit. In the whole run, unlike 'jsa structure', an addon that does not install makes them all not installable
-together (whole coverage 0%: all or nothing, like in production), with a single install per commit; the measures per
-module stay. Then it makes the report of today's code again, with these runs in its trends. The
-reports of each commit stay in codebase_analysis/backfill/<commit>/. A commit already in the history is skipped (also
-one measured before 0.37, in the modes whole and isolated: the history is not touched): a backfill that stopped goes
-on where it was. Each commit is a full measure: count hours for many commits.
-backfill.toml decides what the backfill part of the history holds: a commit (or an event) removed from it
-leaves the history; the runs of 'jsa structure -c' and the events added by hand stay. A measure added to config.toml
-([[report.measures]]) is counted on the commits already measured, in seconds (no install, no test); so is the
-security review on the commits measured before jsa had it.
+'jsa backfill' checks out each commit of backfill.toml not recorded yet in a temporary git worktree (your checkout is
+not touched), does what 'jsa structure -c' does (per module, then whole) with the profile running the Odoo version of
+that code (read in its manifests: '17.0.1.0.0' is Odoo 17), and records it. In the whole run, unlike 'jsa structure',
+an addon that does not install makes them all not installable together (whole coverage 0%: all or nothing, like in
+production), with a single install per commit; the measures per module stay. Then it makes the report of today's
+code again, with these commits in its trend. A commit already recorded is skipped: a backfill that stopped goes on
+where it was; to measure one again, delete its file in runs/. Each commit is a full measure: count hours for many.
+backfill.toml decides what the history holds: a commit removed from it is forgotten, its event follows the file. A
+measure added to config.toml ([[report.measures]]) is counted on the commits already recorded, in seconds (no
+install, no test); so is the security review on the commits recorded before jsa had it.
 'jsa backfill --dry-run' shows the commits, their Odoo version and profile, without measuring anything.
 
-Requires all the addons_roots of config.toml in one git repository. Uses jsa's own code (jsa.structure): it moves
-with the toolbox.
+Requires all the addons_roots of config.toml in one git repository.
 """
-import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -41,14 +34,12 @@ from typing import Iterator, Optional
 
 import typer
 
-from jsa import config, ui
-from jsa.core import odoo
-from jsa.core.addons import find_addons, read_manifests
-from jsa.structure import codebase, report, security
-from jsa.structure.bisect import in_worktree
+from ..core import config, odoo, ui
+from ..core.addons import find_addons, read_manifests
+from . import codebase, report, security
+from .bisect import in_worktree
 
-FOLDER = Path(__file__).resolve().parent
-PLAN = FOLDER / "backfill.toml"  # in a project: .jsa/backfill.toml (plan_file)
+PLAN_NAME = "backfill.toml"
 KEYS = {'commits': ('commit', 'event'), 'events': ('date', 'event')}
 VERSION_RE = re.compile(r'^(\d+)\.0\.')
 
@@ -67,15 +58,18 @@ def git(folder: Path, *args: str) -> subprocess.CompletedProcess:
 # ---------- backfill.toml ----------
 
 def plan_file() -> Path:
-    """The backfill.toml of the project worked on (in its .jsa/), else the one next to this file."""
-    return config.PROJECT_DIR / config.PROJECT_FOLDER / PLAN.name if config.PROJECT_DIR else PLAN
+    """backfill.toml: in the .jsa/ folder of the project worked on, else at the root of the toolbox."""
+    return config.backfill_file()
 
 
 def read_plan(path: Optional[Path] = None) -> dict:
     """{commits: [{commit, event?}], events: [{date, event}], profiles: {version: profile}}. Stops on a mistake."""
     path = path or plan_file()
     if not path.exists():
-        stop(f"No {path}: copy {FOLDER / (PLAN.name + '.sample')} there, and list the commits to measure")
+        before = config.TOOLBOX_DIR / "plugins" / "backfill" / PLAN_NAME  # where the plugin of jsa 0.39 read it
+        if before.exists() and path != before:
+            stop(f"backfill is part of jsa since 0.40: move {before} to {path}")
+        stop(f"No {path}: copy {config.TOOLBOX_DIR / (PLAN_NAME + '.sample')} there, and list the commits to record")
     try:
         plan = config.tomllib.loads(path.read_text(encoding="utf-8"))
     except config.tomllib.TOMLDecodeError as e:
@@ -98,7 +92,7 @@ def read_plan(path: Optional[Path] = None) -> dict:
             if 'event' in item and (not isinstance(item['event'], str) or not item['event'].strip()):
                 stop(f"{path.name}: [[{table}]] #{number}: event must be a text")
     if not plan.get('commits'):
-        stop(f"{path.name}: no [[commits]] to measure")
+        stop(f"{path.name}: no [[commits]] to record")
     for number, item in enumerate(plan['commits'], 1):
         if not isinstance(item.get('commit'), str) or not item['commit'].strip():
             stop(f"{path.name}: [[commits]] #{number} needs commit = \"<a commit hash, a tag or a branch>\"")
@@ -190,94 +184,27 @@ def commit_date(repo: Path, commit: str) -> str:
     return datetime.fromtimestamp(int(git(repo, "log", "-1", "--format=%ct", commit).stdout.strip())).isoformat()
 
 
-# ---------- the history of the report ----------
+# ---------- the recorded commits (codebase_analysis/runs/) ----------
 
-def measured_commits(history: list[dict]) -> set[str]:
-    """The commits already measured by a backfill (in any mode, before 0.37)."""
-    return {line['commit'] for line in history if line.get('commit') and not line.get('event')}
-
-
-# ---------- the history follows backfill.toml ----------
-# backfill.toml decides what the backfill part of the history holds: the measures of commits no longer in it are
-# removed, like the events it wrote and no longer has. What it did not write stays: the runs of
-# 'jsa structure -c' (no commit) and the events added by hand.
-
-def synced(line: dict, wanted: set[str], file_events: set[tuple[str, str]]) -> Optional[dict]:
-    """A line of the history once synced with backfill.toml: None when removed. `wanted`: the commits of the file;
-    `file_events`: its (date, text) events."""
-    if line.get('event'):
-        key = (str(line.get('date')), line['event'])
-        if line.get('from') == PLAN.name:
-            return line if key in file_events else None
-        return {**line, 'from': PLAN.name} if key in file_events else line  # written by a backfill before 'from'
-    if line.get('commit') and line['commit'] not in wanted:
-        return None
-    return line
-
-
-def rewrite_history(history_file: Path, change) -> int:
-    """Rewrite the history: change(line) gives the line to keep (changed or not), or None to remove it. A line that is
-    not JSON (broken by hand) stays as it is. Gives the number of lines removed."""
-    if not history_file.exists():
-        return 0
-    kept, removed = [], 0
-    for text in history_file.read_text(encoding="utf-8").splitlines():
-        try:
-            line = json.loads(text)
-        except json.JSONDecodeError:
-            kept.append(text)
-            continue
-        new = change(line)
-        if new is None:
-            removed += 1
-        else:
-            kept.append(text if new == line else json.dumps(new))
-    temporary = history_file.with_name(history_file.name + ".tmp")
-    temporary.write_text("".join(text + "\n" for text in kept), encoding="utf-8")
-    temporary.replace(history_file)
-    return removed
-
-
-def add_events(history_file: Path, events: list[dict]) -> int:
-    """The events of backfill.toml not in the history yet (same date and text): a backfill run again does not
-    repeat them. Marked as coming from backfill.toml, so that they go when removed from it."""
-    known = {(str(line.get('date')), line.get('event')) for line in report.load_history(history_file) if line.get('event')}
-    new = [{'date': event['date'], 'event': event['event'], 'from': PLAN.name} for event in events
-           if (str(event['date']), event['event']) not in known]
-    for event in new:
-        report.append_history(history_file, event)
-    return len(new)
-
-
-def missing_measures(history: list[dict], commits: set[str], labels: list[str]) -> dict[str, list[str]]:
-    """{commit: the measures of config.toml its runs lack}: added to config.toml after the commit was measured."""
+def missing_measures(runs: list[dict], labels: list[str]) -> dict[str, list[str]]:
+    """{commit: the measures of config.toml its record lacks}: added to config.toml after it was recorded."""
     missing = {}
-    for line in history:
-        if line.get('commit') in commits and not line.get('event'):
-            lacking = [label for label in labels if label not in (line.get('measures') or {})]
-            if lacking:
-                missing[line['commit']] = sorted(set(missing.get(line['commit'], [])) | set(lacking))
+    for run in runs:
+        lacking = [label for label in labels if label not in (run.get('measures') or {})]
+        if lacking:
+            missing[run['commit']] = lacking
     return missing
 
 
-def with_counts(line: dict, counts: dict[str, dict[str, int]]) -> dict:
-    """A line of the history with the measures just counted on its commit."""
-    if line.get('commit') not in counts or line.get('event'):
-        return line
-    return {**line, 'measures': {**(line.get('measures') or {}), **counts[line['commit']]}}
+def missing_security(runs: list[dict]) -> set[str]:
+    """The recorded commits without a security review (recorded before jsa had it)."""
+    return {run['commit'] for run in runs if run.get('security') is None}
 
 
-def missing_security(history: list[dict], commits: set[str]) -> set[str]:
-    """The commits already measured whose runs have no security review (measured before jsa had it)."""
-    return {line['commit'] for line in history
-            if line.get('commit') in commits and not line.get('event') and line.get('security') is None}
-
-
-def with_security(line: dict, found: dict[str, dict]) -> dict:
-    """A line of the history with the security review just made on its commit ({commit: {rule: ids}})."""
-    if line.get('commit') not in found or line.get('event') or line.get('security') is not None:
-        return line
-    return {**line, 'security': found[line['commit']]}
+def with_event(run: dict, event: Optional[str]) -> dict:
+    """A record with the event backfill.toml gives to its commit (none: no event)."""
+    run = {key: value for key, value in run.items() if key != 'event'}
+    return {**run, 'event': event} if event else run
 
 
 def where(number: int, total: int, step: "Step", start: float, took: list[float]) -> str:
@@ -297,10 +224,11 @@ class Step:
     version: int
     profile: str
     addons: int
+    event: Optional[str] = None
 
 
 def backfill(dry_run: bool = typer.Option(False, "--dry-run", help="Show the commits, their Odoo version and profile; measure nothing")):
-    """Measure the commits of plugins/backfill/backfill.toml (coverage per module and whole) for the trends of the report."""
+    """Record the commits of backfill.toml in the history of the report (coverage per module and whole): its trend."""
     plan = read_plan()
     conf = config.load_config()
     roots = config.addons_roots(conf)
@@ -310,11 +238,10 @@ def backfill(dry_run: bool = typer.Option(False, "--dry-run", help="Show the com
     trends = codebase.trends_from_config(conf, measures)
     limit = codebase.test_timeout(conf, warn=True)  # checked before hours of measures
     repo = repository(roots)
-    history_file = config.ANALYSIS_DIR / report.HISTORY_FILE
-    done = measured_commits(report.load_history(history_file))
+    out = config.ANALYSIS_DIR
+    runs = report.load_runs(out)
+    done = {run['commit'] for run in runs}
     commits = [(item, resolve(repo, item['commit'])) for item in plan['commits']]
-    events = plan['events'] + [{'date': commit_date(repo, sha), 'event': item['event']} for item, sha in commits
-                               if item.get('event')]
 
     with worktree(repo) as tree:
         in_tree = [tree / root.resolve().relative_to(repo) for root in roots]
@@ -327,7 +254,7 @@ def backfill(dry_run: bool = typer.Option(False, "--dry-run", help="Show the com
                 profile = profile_for(version, plan['profiles'], conf)
             except ValueError as e:
                 stop(f"{item['commit']}: {e}")
-            steps.append(Step(item['commit'], sha, commit_date(repo, sha), version, profile, len(found)))
+            steps.append(Step(item['commit'], sha, commit_date(repo, sha), version, profile, len(found), item.get('event')))
         for name in sorted({step.profile for step in steps}):
             moved = in_worktree(codebase.coverage_profile_of(name, conf), repo, tree)
             paths = {Path(p).resolve() for p in moved['addons_paths']}
@@ -337,56 +264,53 @@ def backfill(dry_run: bool = typer.Option(False, "--dry-run", help="Show the com
 
         todo = [step for step in steps if step.sha not in done]
         typer.echo(f"📋 {len(steps)} commit(s) of {repo}, coverage measured per module and whole, each test and "
-                   f"setUpClass {limit:g} min at most ({len(steps) - len(todo)} already measured):")
+                   f"setUpClass {limit:g} min at most ({len(steps) - len(todo)} already recorded):")
         for number, step in enumerate(steps, 1):
             label = step.name if step.sha.startswith(step.name) else f"{step.name} ({step.sha[:9]})"
             typer.echo(f"   [{number}] {label}  {step.date[:10]}  Odoo {step.version}, profile '{step.profile}', "
-                       f"{step.addons} addons" + ("  ✔ already measured" if step.sha in done else ""))
-        wanted = {step.sha for step in steps}
-        file_events = {(str(event['date']), event['event']) for event in events}
-        history = report.load_history(history_file)
-        leaving = [line for line in history if synced(line, wanted, file_events) is None]
-        measured = wanted & done
-        to_count = missing_measures(history, measured, [m.label for m in measures])
+                       f"{step.addons} addons" + ("  ✔ already recorded" if step.sha in done else ""))
+        wanted = {step.sha: step for step in steps}
+        leaving = [run for run in runs if run['commit'] not in wanted]
+        kept = [run for run in runs if run['commit'] in wanted]
+        to_count = missing_measures(kept, [m.label for m in measures])
         off = security.switched_off(conf)  # [security] skip of config.toml: every rule off = no review at all
-        to_review = missing_security(history, measured) if len(off) < len(security.RULES) else set()
+        to_review = missing_security(kept) if len(off) < len(security.RULES) else set()
         if leaving:
-            typer.echo(f"🗑️ {len(leaving)} line(s) of the history no longer in backfill.toml (commits, events): "
-                       + ("would be removed" if dry_run else "removed"))
+            typer.echo(f"🗑️ {len(leaving)} recorded commit(s) no longer in backfill.toml: "
+                       + ("would be forgotten" if dry_run else "forgotten"))
         if to_count:
             labels = sorted({label for missing in to_count.values() for label in missing})
-            typer.echo(f"🔢 {', '.join(labels)}: to count on {len(to_count)} commit(s) already measured (no test run)")
+            typer.echo(f"🔢 {', '.join(labels)}: to count on {len(to_count)} commit(s) already recorded (no test run)")
         if to_review:
-            typer.echo(f"🔒 Security review: to make on {len(to_review)} commit(s) already measured (no test run)")
+            typer.echo(f"🔒 Security review: to make on {len(to_review)} commit(s) already recorded (no test run)")
         if dry_run:
-            typer.echo(f"ℹ️ Dry run: nothing measured. {len(events)} event(s) in backfill.toml")
+            typer.echo(f"ℹ️ Dry run: nothing measured. {len(plan['events'])} event(s) in backfill.toml")
             return
-        history_file.parent.mkdir(parents=True, exist_ok=True)
-        rewrite_history(history_file, lambda line: synced(line, wanted, file_events))
-        added = add_events(history_file, events)
-        if added:
-            typer.echo(f"📌 {added} event(s) added to the history")
+        for run in leaving:
+            report.forget_run(out, run['commit'])
+        for run in kept:  # the event of a commit follows backfill.toml
+            if run.get('event') != wanted[run['commit']].event:
+                report.save_run(out, with_event(run, wanted[run['commit']].event))
         if to_count:  # in seconds: the code of each commit, no install
-            counts = {}
             for sha, labels in to_count.items():
                 checkout(tree, sha)
                 found = find_addons(in_tree)
                 manifests = read_manifests(found, warn=False)
-                counts[sha] = codebase.count_measures({a.name: a for a in found if a.name in manifests},
-                                                      [m for m in measures if m.label in labels])
-                typer.echo(f"   🔢 {sha[:9]}: " + ", ".join(f"{label} {count:,}" for label, count in counts[sha].items()))
-            rewrite_history(history_file, lambda line: with_counts(line, counts))
+                counts = codebase.count_measures({a.name: a for a in found if a.name in manifests},
+                                                 [m for m in measures if m.label in labels])
+                run = next(run for run in report.load_runs(out) if run['commit'] == sha)
+                report.save_run(out, {**run, 'measures': {**(run.get('measures') or {}), **counts}})
+                typer.echo(f"   🔢 {sha[:9]}: " + ", ".join(f"{label} {count:,}" for label, count in counts.items()))
         if to_review:  # in seconds too: the code of each commit is read
-            found = {}
             for sha in sorted(to_review):
                 checkout(tree, sha)
                 addons_found = find_addons(in_tree)
                 manifests = read_manifests(addons_found, warn=False)
                 findings, _ = security.scan({a.name: a for a in addons_found if a.name in manifests}, codebase.code_files,
                                             off)
-                found[sha] = security.by_rule(vars(f) for f in findings)
+                run = next(run for run in report.load_runs(out) if run['commit'] == sha)
+                report.save_run(out, {**run, 'security': security.by_rule(vars(f) for f in findings)})
                 typer.echo(f"   🔒 {sha[:9]}: {len(findings)} finding(s)")
-            rewrite_history(history_file, lambda line: with_security(line, found))
 
         failed, start, took = [], time.monotonic(), []  # took: how long each measure lasted, for the time left
         with ui.board() as board:  # in a terminal: where it is, kept at the bottom (see ui.board)
@@ -398,25 +322,29 @@ def backfill(dry_run: bool = typer.Option(False, "--dry-run", help="Show the com
                     board.set('backfill', lambda n=number, s=step: where(n, len(todo), s, start, took))
                 checkout(tree, step.sha)
                 profile = in_worktree(codebase.coverage_profile_of(step.profile, conf), repo, tree)
-                out = config.ANALYSIS_DIR / "backfill" / step.sha[:12]
-                try:
-                    # whole: one addon that cannot install fails them all, like in production (no retry without it)
-                    run = codebase.analyse(conf, in_tree, out, step.profile, profile, measure_all=True,
-                                           measures=measures, trends=trends, all_or_nothing=True)
-                except typer.Exit:  # said why: the next measures are taken
-                    run = None
+                with tempfile.TemporaryDirectory(prefix="jsa_backfill_report_") as measured:
+                    try:
+                        # whole: one addon that cannot install fails them all, like in production (no retry without it)
+                        run = codebase.analyse(conf, in_tree, Path(measured), step.profile, profile, measure_all=True,
+                                               measures=measures, trends=trends, all_or_nothing=True)
+                    except typer.Exit:  # said why: the next measures are taken
+                        run = None
+                    if run:
+                        report.save_run(out, with_event({**run, 'commit': step.sha,
+                                                         'code_date': run.get('code_date') or step.date}, step.event))
+                    else:  # Odoo's log, to see why
+                        log = Path(measured) / "coverage_odoo.log"
+                        kept_log = report.runs_folder(out) / f"{step.sha[:12]}.log"
+                        if log.exists():
+                            kept_log.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy(log, kept_log)
+                        failed.append(step.name)
+                        typer.echo(f"⚠️ {step.name}: nothing measured (see above" + (f", Odoo's log: {kept_log})" if log.exists() else ")"))
                 took.append(time.monotonic() - began)
-                lines = report.load_history(out / report.HISTORY_FILE)
-                if run and lines:
-                    report.append_history(history_file, {**lines[-1], 'code_date': lines[-1].get('code_date') or step.date,
-                                                         'commit': step.sha})
-                else:
-                    failed.append(step.name)
-                    typer.echo(f"⚠️ {step.name}: nothing measured (see above)")
 
-    typer.echo("\n📊 The report of today's code, with the measured commits in its trends")
+    typer.echo("\n📊 The report of today's code, with the recorded commits in its trend")
     codebase.analyse(conf, roots, config.ANALYSIS_DIR, measures=measures, trends=trends)
-    typer.echo(f"✅ {len(todo) - len(failed)} measure(s) taken" + (f", ⚠️ {len(failed)} not: {', '.join(failed)}" if failed else ""))
+    typer.echo(f"✅ {len(todo) - len(failed)} commit(s) recorded" + (f", ⚠️ {len(failed)} not: {', '.join(failed)}" if failed else ""))
     if failed:
         raise typer.Exit(code=1)
 

@@ -1,21 +1,18 @@
-"""The backfill plugin (plugins/backfill): what can be checked without Odoo. The real run: ~/jsa_testenv/backfill_check.sh."""
-import importlib.util
-import json
-import os
+"""jsa backfill (jsa/structure/backfill.py): what can be checked without Odoo. The real run: ~/jsa_testenv/backfill_check.sh."""
 import subprocess
 from pathlib import Path
 
 import pytest
 import typer
 
-PLUGIN = Path(__file__).resolve().parent.parent / "plugins" / "backfill" / "__init__.py"
-spec = importlib.util.spec_from_file_location("jsa_plugin_backfill", PLUGIN)
-backfill = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(backfill)
+from jsa.core import config
+from jsa.structure import backfill, codebase, report
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_the_sample_is_a_valid_plan():
-    plan = backfill.read_plan(PLUGIN.parent / "backfill.toml.sample")
+    plan = backfill.read_plan(ROOT / "backfill.toml.sample")
     assert [c["commit"] for c in plan["commits"]] == ["4f2a9c1", "v2.0"]
     assert plan["commits"][1]["event"] == "Release 2.0" and plan["events"][0]["date"] == "2025-09-01"
     assert plan["profiles"] == {} and "modes" not in plan
@@ -23,7 +20,7 @@ def test_the_sample_is_a_valid_plan():
 
 def test_mistakes_in_the_plan_are_refused(tmp_path, capsys, monkeypatch):
     plan = tmp_path / "backfill.toml"
-    for text, why in (("", "no [[commits]] to measure"),
+    for text, why in (("", "no [[commits]] to record"),
                       ("[[commits]]\ncomit = 'abc'\n", "has the key(s) comit, which do not exist"),
                       ("[[commits]]\nevent = 'x'\n", "needs commit = "),
                       ("[[commits]]\ncommit = 'a'\n[[events]]\ndate = 'soon'\nevent = 'x'\n", "[[events]] #1 needs date"),
@@ -40,11 +37,19 @@ def test_mistakes_in_the_plan_are_refused(tmp_path, capsys, monkeypatch):
         backfill.read_plan(tmp_path / "missing.toml")
     out = capsys.readouterr().out
     assert "missing.toml: copy " in out and "backfill.toml.sample there" in out
-    # in a project, its backfill.toml is in its .jsa/ folder
-    monkeypatch.setattr(backfill.config, "PROJECT_DIR", tmp_path)
+    # at the root of the toolbox; in a project, in its .jsa/ folder
+    monkeypatch.setattr(config, "TOOLBOX_DIR", tmp_path / "toolbox")
+    monkeypatch.setattr(config, "PROJECT_DIR", None)
+    assert backfill.plan_file() == tmp_path / "toolbox" / "backfill.toml"
+    monkeypatch.setattr(config, "PROJECT_DIR", tmp_path)
     assert backfill.plan_file() == tmp_path / ".jsa" / "backfill.toml"
-    monkeypatch.setattr(backfill.config, "PROJECT_DIR", None)
-    assert backfill.plan_file() == PLUGIN.parent / "backfill.toml"
+    # where the plugin of jsa 0.39 read it: said where it goes now
+    monkeypatch.setattr(config, "PROJECT_DIR", None)
+    (tmp_path / "toolbox" / "plugins" / "backfill").mkdir(parents=True)
+    (tmp_path / "toolbox" / "plugins" / "backfill" / "backfill.toml").write_text("[[commits]]\ncommit = 'a'\n")
+    with pytest.raises(typer.Exit):
+        backfill.read_plan()
+    assert "backfill is part of jsa since 0.40: move" in capsys.readouterr().out
     plan.write_text("[[commits]]\ncommit = 'a'\n[profiles]\n17 = 'odoo17'\n")
     assert backfill.read_plan(plan)["profiles"] == {"17": "odoo17"}
 
@@ -70,50 +75,52 @@ def test_the_odoo_version_of_the_code_and_its_profile(monkeypatch):
         backfill.profile_for(None, {}, conf)
 
 
-def test_events_are_added_once_and_measured_commits_are_skipped(tmp_path):
-    history = tmp_path / "history.jsonl"
-    events = [{"date": "2025-09-01", "event": "Release 2.0"}, {"date": "2025-10-01T09:00:00", "event": "Hired"}]
-    assert backfill.add_events(history, events) == 2
-    assert backfill.add_events(history, events) == 0  # run again: not repeated
-    lines = [{"commit": "aaa"}, {"commit": "bbb", "mode": "whole"}, {"mode": "isolated"},
-             {"date": "2025-09-01", "event": "x", "commit": "ccc"}]
-    assert backfill.measured_commits(lines) == {"aaa", "bbb"}  # bbb: measured before 0.37, in one mode: not again
+def test_the_recorded_commits(tmp_path):
+    report.save_run(tmp_path, {"commit": "b" * 40, "code_date": "2025-09-01T10:00:00", "coverage": 50.0})
+    report.save_run(tmp_path, {"commit": "a" * 40, "code_date": "2025-06-01T10:00:00", "coverage": 40.0,
+                               "measures": {"TODO": 3}, "security": {"eval": ["x"]}})
+    (report.runs_folder(tmp_path) / "broken.json").write_text("not json")
+    runs = report.load_runs(tmp_path)
+    assert [r["commit"][0] for r in runs] == ["a", "b"]  # in the order of their code, whatever the file names
+    assert (report.runs_folder(tmp_path) / f"{'a' * 12}.json").exists()
+    # measured again: replaced, never twice
+    report.save_run(tmp_path, {**runs[1], "coverage": 52.0})
+    assert [r["coverage"] for r in report.load_runs(tmp_path)] == [40.0, 52.0]
+    assert backfill.missing_measures(runs, ["TODO", "sudo"]) == {"a" * 40: ["sudo"], "b" * 40: ["TODO", "sudo"]}
+    assert backfill.missing_security(runs) == {"b" * 40}  # recorded before jsa had the review
+    assert backfill.with_event(runs[0], "Release 2.0")["event"] == "Release 2.0"
+    assert "event" not in backfill.with_event({**runs[0], "event": "old"}, None)  # the event follows backfill.toml
+    report.forget_run(tmp_path, "a" * 40)
+    assert [r["commit"][0] for r in report.load_runs(tmp_path)] == ["b"]
+    plan = tmp_path / "backfill.toml"
+    plan.write_text('[[commits]]\ncommit = "x"\n[[events]]\ndate = "2025-07-01"\nevent = "Hired"\n'
+                    '[[events]]\ndate = "soon"\nevent = "broken"\n')
+    assert report.plan_events(plan) == [{"date": "2025-07-01", "event": "Hired"}]
+    assert report.plan_events(tmp_path / "missing.toml") == []
 
 
-def test_the_history_follows_backfill_toml(tmp_path):
-    wanted, file_events = {"aaa", "bbb"}, {("2025-09-01", "Release 2.0")}
-    lines = [
-        {"commit": "aaa", "coverage": 50.0},                           # in backfill.toml: kept
-        {"commit": "bbb", "mode": "isolated", "coverage": 40.0},       # in it, measured before 0.37: kept
-        {"commit": "ccc", "mode": "whole", "coverage": 30.0},          # a commit removed from the file: removed
-        {"coverage": 70.0, "date": "2026-11-22"},                      # a run of 'jsa structure -c': kept
-        {"date": "2025-09-01", "event": "Release 2.0", "from": "backfill.toml"},   # still in the file: kept
-        {"date": "2025-10-01", "event": "Old release", "from": "backfill.toml"},   # removed from the file: removed
-        {"date": "2025-11-01", "event": "Added by hand"},                           # never in the file: kept
-    ]
-    history = tmp_path / "history.jsonl"
-    history.write_text("".join(json.dumps(line) + "\n" for line in lines) + "not json, edited by hand\n")
-    assert backfill.rewrite_history(history, lambda line: backfill.synced(line, wanted, file_events)) == 2
-    kept = history.read_text().splitlines()
-    assert [json.loads(text).get("coverage") or json.loads(text).get("event") for text in kept[:-1]] == \
-        [50.0, 40.0, 70.0, "Release 2.0", "Added by hand"]
-    assert kept[-1] == "not json, edited by hand"  # left as it was
-    # an event written by a backfill of before (no "from"), still in the file: adopted, it will go with the file
-    assert backfill.synced({"date": "2025-09-01", "event": "Release 2.0"}, wanted, file_events)["from"] == "backfill.toml"
-
-
-def test_a_measure_added_later_is_counted_on_the_commits_already_measured(tmp_path):
-    lines = [{"commit": "aaa", "mode": "whole", "measures": {"TODO": 3}}, {"commit": "aaa", "mode": "isolated"},
-             {"commit": "bbb", "mode": "whole", "measures": {"TODO": 2, "sudo": 1}},
-             {"commit": "zzz", "mode": "whole"}, {"date": "2025-09-01", "event": "x"}]
-    missing = backfill.missing_measures(lines, {"aaa", "bbb"}, ["TODO", "sudo"])
-    assert missing == {"aaa": ["TODO", "sudo"]}  # zzz: not in backfill.toml; bbb: complete
-    history = tmp_path / "history.jsonl"
-    history.write_text("".join(json.dumps(line) + "\n" for line in lines))
-    backfill.rewrite_history(history, lambda line: backfill.with_counts(line, {"aaa": {"sudo": 5}}))
-    after = [json.loads(text) for text in history.read_text().splitlines()]
-    assert after[0]["measures"] == {"TODO": 3, "sudo": 5} and after[1]["measures"] == {"sudo": 5}
-    assert after[2] == lines[2] and after[4] == lines[4]
+def test_the_branch_of_the_code(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "addons" / "a").mkdir(parents=True)
+    git = lambda *args: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=repo,
+                                       capture_output=True, text=True, check=True).stdout.strip()
+    git("init", "-q", "-b", "main")
+    (repo / "addons" / "a" / "__manifest__.py").write_text("{}")
+    git("add", ".")
+    git("commit", "-q", "-m", "one")
+    first = git("rev-parse", "HEAD")
+    git("checkout", "-q", "-b", "feature")
+    (repo / "addons" / "a" / "x.py").write_text("x = 1\n")
+    git("add", ".")
+    git("commit", "-q", "-m", "two")
+    branch = codebase.branch_of([repo / "addons"])
+    assert branch["branch"] == "feature" and branch["commit"] == git("rev-parse", "HEAD") and not branch["dirty"]
+    assert branch["commits"] == {first, branch["commit"]}
+    git("checkout", "-q", "main")
+    assert codebase.branch_of([repo / "addons"])["commits"] == {first}  # the commit of the feature is not in main
+    (repo / "addons" / "a" / "__manifest__.py").write_text("{'x': 1}")
+    assert codebase.branch_of([repo / "addons"])["dirty"]
+    assert codebase.branch_of([tmp_path / "elsewhere"]) is None  # not in git
 
 
 def test_the_worktree_moves_through_the_commits_and_leaves_the_checkout_alone(tmp_path):
@@ -128,7 +135,7 @@ def test_the_worktree_moves_through_the_commits_and_leaves_the_checkout_alone(tm
     old = git("rev-parse", "HEAD")
     (repo / "addons" / "a" / "__manifest__.py").write_text("{'version': '19.0.1.0.0'}")
     git("commit", "-q", "-am", "19")
-    new = git("rev-parse", "HEAD")  # the plugin resolves the names in the repository: in the worktree, HEAD is its own
+    new = git("rev-parse", "HEAD")  # names are resolved in the repository: in the worktree, HEAD is its own
     (repo / "mine.txt").write_text("work in progress")  # the user's checkout: never touched
     assert backfill.repository([repo / "addons"]) == repo.resolve()
     assert backfill.resolve(repo, "HEAD~1") == old

@@ -103,7 +103,7 @@ When you work on several codebases (one repository of addons per company, say), 
   toolbox's. Its addons are always its own: `[codebase] addons_roots` (relative to the project folder), by default
   the project folder itself.
 - **In `.jsa/`**: its `config.toml`, `reviewed.toml` (the findings found fine), `backfill.toml` (the commits
-  `jsa backfill` measures), and its reports (`codebase_analysis/`: report, history, mutation results). The dumps
+  `jsa backfill` records), and its reports (`codebase_analysis/`: report, recorded commits, mutation results). The dumps
   stay shared, in the toolbox's `dumps/`.
 - Keep `.jsa/` out of git: add it to the `.gitignore` of the repository.
 
@@ -192,30 +192,33 @@ it holds and what changed: a click opens one), then the table of the addons and 
 
 ![Dependency graph](images/report_graph.png)
 
-- **Trends**, run after run, one chart under the other: coverage and lines of code open, the others folded (tests,
-  failed tests, security findings to review, addons not installable, addons without tests, addons, enterprise
+- **Trends**, commit after commit, one chart under the other: coverage and lines of code open, the others folded
+  (tests, failed tests, security findings to review, addons not installable, addons without tests, addons, enterprise
   dependencies, your own measures), each titled with its last value. Coverage, failed tests and addons not
   installable have two lines: per module, and whole (dashed). Each chart is zoomed on its values (coverage going from
-  80% to 82% shows); its button "Axis from 0" draws it from 0 instead. Each run is placed at the date of the code it
-  measured: the last commit of your addons folders (or the date of the run when they had uncommitted changes). So
-  you can fill the past: `jsa backfill` (below).
+  80% to 82% shows); its button "Axis from 0" draws it from 0 instead. Each point is a commit recorded with
+  `jsa backfill` (below), placed at its date; only the commits of your current branch are drawn (the others are
+  counted in the summary). Under the title, in small: the branch, the commit and its date of the code measured.
 
-**Filling the past.** List old commits of your addons in `plugins/backfill/backfill.toml` (copy
-`backfill.toml.sample`), with your events, then run `jsa backfill` (`--dry-run` first: it shows each commit with its
-Odoo version and profile). For each commit, in a temporary checkout (yours is not touched): the Odoo version is read
+**The history: recording commits.** The trend draws the commits recorded with `jsa backfill`, and only them:
+`jsa structure` never adds to the history, recording is done on purpose. The tiles compare the measures with the most
+recent recorded commit of your branch. List the commits to record in `backfill.toml` (copy `backfill.toml.sample` at
+the root of the toolbox; in a project, in its `.jsa/` folder): a commit hash, a tag or a branch, with an optional
+`event`, and events at a date of their own (`[[events]]`). To record today's code, add its commit (or a tag). Then run
+`jsa backfill` (`--dry-run` first: it shows each commit with its Odoo version and profile). For each commit, in a temporary checkout (yours is not touched): the Odoo version is read
 in the manifests (`17.0.1.0.0`: Odoo 17), the profile running that version is used (or the one given in `[profiles]`
 of the file), and the addons are measured like `jsa structure -c`: per module, then whole. One difference with
 `jsa structure`: in the whole run, an addon that does not install (or needs a module found in no addons path) makes
 all the addons count as not installable together, as in production: whole coverage 0%, a single install per commit
 (the broken addon's note says why, the others say "not tested"); the measures per module stay. A test that gets stuck
-is still skipped and counted failed, the others run. The runs go in the trends at the date of the commit; the reports
-of each commit stay in `codebase_analysis/backfill/<commit>/`. A commit already in the history is skipped (also one
-measured by jsa 0.36 or older, in the modes whole and isolated: its lines stay as they are), so a backfill that
-stopped goes on where it was, and a commit added to the file (anywhere: the charts follow the dates) is the only one
-measured. `backfill.toml` decides what the backfill part of the history holds: a commit or an event removed from it
-leaves the history (`--dry-run` says how many lines); the runs of `jsa structure -c` and the events added by hand
-stay. A measure added to `config.toml` (`[[report.measures]]`) is counted on the commits already measured, in seconds:
-their code only, no install, no test. Each commit is a full measure: count hours for many commits. Needs all the `addons_roots` in one
+is still skipped and counted failed, the others run. Each commit is recorded in a small file,
+`codebase_analysis/runs/<commit>.json`: what the trend draws (the totals, your measures, the security findings), not
+a whole report; when nothing could be measured, Odoo's log is kept next to it (`<commit>.log`). A commit already
+recorded is skipped, so a backfill that stopped goes on where it was, and a commit added to the file (anywhere: the
+charts follow the dates) is the only one measured; to measure one again, delete its file. `backfill.toml` decides what
+the history holds: a commit taken out of it is forgotten (`--dry-run` says how many), the event of a commit follows
+the file. A measure added to `config.toml` (`[[report.measures]]`) is counted on the commits already recorded, in
+seconds: their code only, no install, no test. Each commit is a full measure: count hours for many commits. Needs all the `addons_roots` in one
 git repository. In a terminal, a block stays at the bottom while the messages scroll above it: which measure of how
 many (which commit, time elapsed and left), what Odoo does (the addon, its tests so far) and the test that
 runs, with how long it has been running.
@@ -281,12 +284,11 @@ It then leaves the list (it is shown folded under "Reviewed" in its rule, with i
 when lines move, and changes when its code changes (to look at again). The lines of `reviewed.toml` whose finding is
 gone are pointed out; a line without a reason stops the command. The chart "Security findings to review" counts, for
 each run, the findings not reviewed in today's `reviewed.toml`: reviewing one lowers the whole curve. Like your
-measures, it is recorded by the runs that measure the coverage (`-c`); `jsa backfill` adds it to the commits already
-measured, in seconds.
+measures, it is recorded with the commits (`jsa backfill`), which adds it to the commits already recorded, in seconds.
 
-**Events.** To see the trends before and after a release, someone joining the team, ..., add a line by hand to
-`codebase_analysis/history.jsonl`: `{"date": "2026-11-01", "event": "Release 2.0"}`. It is drawn as a dashed vertical
-line on every chart, once runs were measured before and after it.
+**Events.** To see the trends before and after a release, someone joining the team, ..., add it to `backfill.toml`:
+`event = "Release 2.0"` on a commit, or `[[events]]` with a `date` and an `event`. It is drawn as a dashed vertical
+line on every chart, once commits were recorded before and after it.
 
 **Measuring the coverage.** `jsa structure -c -p <profile>` installs the addons in temporary databases (dropped
 afterwards), runs their tests under `coverage`, and puts the results in the report. Two measures, both every time:
@@ -329,15 +331,10 @@ The report shows both: the value per module first, then the whole one (tiles, ta
   interact). `--all` measures everything.
 - Without `-c`, the report keeps the last measures of the unchanged addons.
 
-**Files** next to the report: `state.json` (the last results, also the cache), `history.jsonl` (one line per measured
-run, for the trends: delete a line to forget a run; your events), `coverage_odoo.log` (the full Odoo log of the last
-measure).
-Every run is on the same charts, every Odoo version on the same curve, so the coverage on Odoo 17 and on 19
-compare; a dashed line marks where the version changes. The runs of jsa 0.36 and older measured one way (a mode):
-they stay in the history as they are, a run in mode whole on the whole line, isolated or both on the per module line,
-and the two runs of one commit measured by `jsa backfill` make one point. The runs made before jsa 0.31 counted the
-coverage another way (every line of the files, installing included, so higher): to keep the trend comparable, delete
-`codebase_analysis/history.jsonl` (and run `jsa backfill` again if you use it).
+**Files** next to the report: `state.json` (the last results, also the cache), `runs/` (one small file per commit
+recorded with `jsa backfill`: the trend), `coverage_odoo.log` (the full Odoo log of the last measure). Every recorded
+commit is on the same charts, every Odoo version on the same curve, so the coverage on Odoo 17 and on 19 compare; a
+dashed line marks where the version changes. The `history.jsonl` of jsa 0.39 and older is no longer read.
 
 **Mutation testing: what the tests run without checking it.** Coverage says which code the tests run, not whether they
 check what it does. `jsa mutation <addon>... -p <profile>` changes the code of an addon one small change at a time (a
@@ -421,8 +418,6 @@ The examples:
 - `plugins/quote_pdfs/` puts back the PDF files of the quotation headers and footers (Odoo 18+, quotation builder),
   lost with a dump without filestore: `jsa quote-pdfs <db> -p <profile>` (`--list` shows the ids). Its
   `documents.toml` (id = file, see `documents.toml.sample`) and your PDFs go in that folder, ignored by git.
-- `plugins/backfill/` measures old commits for the trends of the report: `jsa backfill` (see "Filling the past"
-  above), its `backfill.toml` in that folder, ignored by git.
 
 ## Odoo versions
 

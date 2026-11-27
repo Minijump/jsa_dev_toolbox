@@ -64,6 +64,12 @@ def use_project(root: Optional[Path]):
     ANALYSIS_DIR, REVIEWED_FILE = base / "codebase_analysis", base / "reviewed.toml"
 
 
+def backfill_file() -> Path:
+    """backfill.toml, the commits recorded in the history of the report: in the .jsa/ folder of the project worked
+    on, else at the root of the toolbox."""
+    return (PROJECT_DIR / PROJECT_FOLDER if PROJECT_DIR else TOOLBOX_DIR) / "backfill.toml"
+
+
 def settings_file() -> Path:
     """Where the settings of what jsa works on are written: the project's .jsa/config.toml, else config.toml."""
     return PROJECT_DIR / PROJECT_FOLDER / "config.toml" if PROJECT_DIR else CONFIG_FILE

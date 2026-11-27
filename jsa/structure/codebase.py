@@ -125,6 +125,30 @@ def count_measures(addons: dict[str, Path], measures: list[Measure]) -> dict[str
     return counts
 
 
+def branch_of(roots: list[Path]) -> Optional[dict]:
+    """The git branch the addons are on: {branch, commit, date (of the commit), dirty (uncommitted changes in the
+    addons folders), commits (every commit of its history: the trend shows the recorded commits among them)}. None
+    when the addons folders are not all in one git repository."""
+    run = lambda *args: subprocess.run(["git", "-C", str(roots[0]), *args], capture_output=True, text=True,
+                                       errors="replace", timeout=60)
+    try:
+        tops = {subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                               timeout=60).stdout.strip() for root in roots}
+        if len(tops) != 1 or not next(iter(tops)):
+            return None
+        head, name, when, history = (run("rev-parse", "HEAD"), run("rev-parse", "--abbrev-ref", "HEAD"),
+                                     run("log", "-1", "--format=%ct", "HEAD"), run("rev-list", "HEAD"))
+        dirty = any(subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no", "--", "."],
+                                   capture_output=True, text=True, timeout=60).stdout.strip() for root in roots)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if head.returncode or not when.stdout.strip().isdigit():
+        return None
+    return {'branch': name.stdout.strip() if name.stdout.strip() != "HEAD" else None, 'commit': head.stdout.strip(),
+            'date': datetime.fromtimestamp(int(when.stdout.strip())).isoformat(timespec='seconds'), 'dirty': dirty,
+            'commits': set(history.stdout.split())}
+
+
 def code_date(roots: list[Path]) -> Optional[str]:
     """When the measured code was written: the last commit changing the addons folders, so that measuring an old
     commit places it in the past of the trends. None (the run is placed at its own date) when a folder is not in git
@@ -262,12 +286,12 @@ def coverage_profile_of(name: str, conf: dict) -> dict:
 def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str] = None,
             coverage_profile: Optional[dict] = None, measure_all: bool = False, standard_tests: bool = False,
             measures: list[Measure] = (), trends: Optional[dict] = None, all_or_nothing: bool = False) -> Optional[dict]:
-    """What 'jsa structure' does: the report of the addons of `roots`, written in `out_dir` (state.json, history.jsonl,
+    """What 'jsa structure' does: the report of the addons of `roots`, written in `out_dir` (state.json,
     report.html), with their tests run under coverage when `coverage_profile` (named `profile`) is given: per module
     (each addon alone) and whole (all together, kept under 'whole' in the state of each addon).
     `all_or_nothing` (whole): an addon that cannot install makes them all not installable together, as in production,
     instead of being left out and the others tried again (jsa backfill); the measures per module stay.
-    Returns the run added to the history, None when nothing was measured."""
+    Returns the record of the run (what jsa backfill keeps of a commit), None when nothing was measured."""
     reviewed = security.load_reviewed(config.REVIEWED_FILE)  # a mistake there stops before anything is measured
     reviewed_changes = security.load_reviewed(config.REVIEWED_FILE, 'mutation')
     off = security.switched_off(conf)  # [security] skip of config.toml
@@ -375,9 +399,8 @@ def analyse(conf: dict, roots: list[Path], out_dir: Path, profile: Optional[str]
         failed = sum(len(r['failed']) for r in standard.values())
         typer.echo(f"{'⚠️' if failed else '✅'} Standard modules: {sum(r['tests'] for r in standard.values())} test(s) "
                    f"in {len(standard)} module(s), {failed} failed")
-    report.write_reports(loc, dependencies, results, out_dir, state_extra, run, standard,
-                         count_measures(addons, measures), trends, reviewed, reviewed_changes, off)
-    return run
+    return report.write_reports(loc, dependencies, results, out_dir, state_extra, run, standard,
+                                count_measures(addons, measures), trends, reviewed, reviewed_changes, off, branch_of(roots))
 
 
 def open_report():

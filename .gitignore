@@ -9,14 +9,10 @@ plugins/*
 plugins/quote_pdfs/*
 !plugins/quote_pdfs/__init__.py
 !plugins/quote_pdfs/*.sample
-# the backfill plugin: its code is part of the toolbox, its backfill.toml is yours
-!plugins/backfill/
-plugins/backfill/*
-!plugins/backfill/__init__.py
-!plugins/backfill/*.sample
 # the ui tests left jsa in 0.36: the tests and keywords you wrote in uitests/ stay out of git
 uitests/
 reviewed.toml
+backfill.toml
 roadmap_internal.md
 
 # generated
