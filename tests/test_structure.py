@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 from datetime import datetime, timezone
@@ -572,3 +573,22 @@ def test_the_x_axis_is_at_scale():
     assert '<polyline points="48.0,' in same and "1128.0," in same and 'class="date"' not in same
     near = report_html._trend([_run(1, 60.0, 12000), _run(3, 61.0, 12100)])  # 2 days: no date between them
     assert 'class="date"' not in near and '<polyline points="48.0,' in near
+
+
+def test_the_graph_can_color_the_addons_by_their_mutation_score():
+    state = {"a": {"coverage": 90, "tests": 2, "failed": [], "loc": 10, "depends": []},
+             "b": {"coverage": 40, "tests": 1, "failed": [], "loc": 10, "depends": ["a"]}}
+    mutants = [{"id": f"m{n}", "file": "models/a.py", "line": n, "function": "A.f", "op": "comparison", "original": "x > 1",
+                "mutated": "x <= 1", "status": s, "killers": []}
+               for n, s in enumerate(("killed", "killed", "killed", "survived", "not reached", "not reached"))]
+    graphs = {"custom": "<svg></svg>"}
+    meta = {"generated_at": "2026-01-01T10:00:00", "mutation": {"a": {"addon": "a", "mutants": mutants}}}
+    page = report_html.render(state, report.summarize(state), None, None, None, [], [], graphs, meta)
+    data = json.loads(page.split('<script type="application/json" id="data">')[1].split("</script>")[0])
+    a, b = data["addons"]["a"], data["addons"]["b"]
+    assert a["color"] == report_html.coverage_color(90) and a["mutation"] == report_html.coverage_color(50)  # 3 of 6
+    assert b["mutation"] is None  # not run by jsa mutation: no color
+    assert "mutation score 50% of all the changes (75% of those reached)" in a["tip"]
+    assert '<select id="colorby">' in page and 'data-name="Mutation score (of all the changes)"' in page
+    without = report_html.render(state, report.summarize(state), None, None, None, [], [], graphs, {"generated_at": "2026-01-01T10:00:00"})
+    assert 'id="colorby"' not in without and '<span id="colorname">Coverage</span>' in without  # coverage only

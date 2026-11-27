@@ -188,7 +188,8 @@ it holds and what changed: a click opens one), then the table of the addons and 
 
 - **The dependency graph**, with or without the standard modules. Color = coverage, size = lines of code, ✖ = not
   installable, ! = failing tests. "Duplicate links" (A → C when A → B → C already shows it) are hidden unless asked.
-  "Download image" saves the graph as shown.
+  Once `jsa mutation` was run, "Color by" offers the mutation score instead of the coverage (of all the changes, the
+  same colors; an addon `jsa mutation` never measured stays blank). "Download image" saves the graph as shown.
 
 ![Dependency graph](images/report_graph.png)
 

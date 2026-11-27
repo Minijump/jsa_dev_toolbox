@@ -171,7 +171,7 @@ if (table) {
   search.addEventListener('input', filter); only.addEventListener('change', filter);
 }
 // ----- graph (graphviz names its root group "graph": the container is "depgraph", the styled svg is "dg")
-const SVG = 'http://www.w3.org/2000/svg', DUPLICATES = new Set(D.duplicates);
+const SVG = 'http://www.w3.org/2000/svg', DUPLICATES = new Set(D.duplicates), painted = [];  // [ellipse, addon]
 document.querySelectorAll('.depgraph').forEach(box => {
   const svg = box.querySelector('svg'), nodes = {}, edges = [];
   svg.classList.add('dg');
@@ -187,7 +187,7 @@ document.querySelectorAll('.depgraph').forEach(box => {
     }
     g.classList.add(a.status);
     const shape = g.querySelector('ellipse'), text = g.querySelector('text');
-    if (a.color) shape.style.fill = a.color;  // coverage: red -> green
+    painted.push([shape, a]);  // filled by its coverage, or its mutation score: red -> green (see paint)
     if (a.status === 'not_installable') text.textContent = '✖ ' + text.textContent;
     if (a.status === 'failing') {  // a flag on the addon, its color still shows the coverage
       const flag = document.createElementNS(SVG, 'g'), dot = document.createElementNS(SVG, 'circle'), mark = document.createElementNS(SVG, 'text');
@@ -228,6 +228,8 @@ document.querySelectorAll('.depgraph').forEach(box => {
   };
   box.zoom(0);
 });
+const paint = by => painted.forEach(([shape, a]) => shape.style.fill = a[by] || '');  // none: not measured
+paint('color');
 // ----- security review, mutation testing: the lines to copy into reviewed.toml
 document.querySelectorAll('button.copy').forEach(btn => btn.addEventListener('click', () => {
   const text = btn.dataset.copy, label = btn.textContent;
@@ -259,6 +261,13 @@ if (std) {
     document.getElementById('dupcount').textContent = ` (${count})`;
   };
   std.addEventListener('change', show); dup.addEventListener('change', show); show();
+  const colorby = document.getElementById('colorby');
+  if (colorby) colorby.addEventListener('change', () => {
+    const chosen = colorby.selectedOptions[0];
+    paint(colorby.value);
+    document.getElementById('colorname').textContent = chosen.dataset.name;
+    document.getElementById('colornone').textContent = chosen.dataset.none;
+  });
   document.getElementById('gsearch').addEventListener('input', e => graphs().forEach(b => b.find(e.target.value.trim().toLowerCase())));
   document.querySelectorAll('[data-zoom]').forEach(btn => btn.addEventListener('click', () => graphs().forEach(b => b.zoom(parseFloat(btn.dataset.zoom)))));
   // the graph as shown (standard modules or not, current selection) as a PNG image, twice its size to stay sharp
@@ -339,8 +348,8 @@ def _tests_html(entry: dict, newly: int = 0) -> str:
     return main + line
 
 
-def _tip(entry: dict) -> str:
-    """Tooltip of an addon in the graph."""
+def _tip(entry: dict, mutation: Optional[dict] = None) -> str:
+    """Tooltip of an addon in the graph. mutation: the result of its last jsa mutation."""
     state = report.status(entry)
     parts = [STATUS[state][0].lower()]
     if isinstance(entry.get('coverage'), int) and entry['coverage'] >= 0:
@@ -349,6 +358,10 @@ def _tip(entry: dict) -> str:
     if state in ('ok', 'failing'):
         tests = entry.get('tests', 0)
         parts.append(f"{tests} test{'s' if tests != 1 else ''}" + (f", {len(entry['failed'])} failed" if entry.get('failed') else ""))
+    if mutation and mutation_score_all(mutation) is not None:
+        reached = mutation_score(mutation)
+        parts.append(f"mutation score {mutation_score_all(mutation)}% of all the changes"
+                     + (f" ({reached}% of those reached)" if reached is not None else ""))
     return ", ".join(parts + [f"{entry.get('loc', 0):,} lines"])
 
 
@@ -778,7 +791,9 @@ def _seconds(seconds: float) -> str:
     return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m{seconds % 60:02d}s"
 
 
-def _graph(graphs: dict) -> str:
+def _graph(graphs: dict, mutation: bool = False) -> str:
+    """mutation: results of jsa mutation exist: the addons can be colored by their mutation score instead of their
+    coverage (the user's request 2026-11-27: the same colors, of all the changes; the coverage stays the default)."""
     if not graphs.get('custom'):
         return ('<section><h2>Dependency graph</h2><span class="meta">Not drawn: graphviz is not installed '
                 '(<code>sudo apt install graphviz</code>, then run the command again).</span></section>')
@@ -786,14 +801,17 @@ def _graph(graphs: dict) -> str:
             '<label><input type="checkbox" id="std"> Show standard modules</label>'
             '<label title="A link A → C is a duplicate when the graph already shows another path, e.g. A → B → C">'
             '<input type="checkbox" id="dup"> Show duplicate links<span id="dupcount"></span></label>'
+            + ('<label>Color by <select id="colorby"><option value="color" data-name="Coverage" data-none="not measured">'
+               'coverage</option><option value="mutation" data-name="Mutation score (of all the changes)" '
+               'data-none="not run by jsa mutation">mutation score</option></select></label>' if mutation else '') +
             '<input type="search" id="gsearch" placeholder="Find an addon" aria-label="Find an addon in the graph">'
             '<button data-zoom="0.8" aria-label="Zoom out">−</button><button data-zoom="1.25" aria-label="Zoom in">+</button>'
             '<button data-zoom="0">Fit</button><button id="download">Download image</button>'
             '<span class="meta" style="margin:0">An arrow goes from an addon to what it depends on. Click an addon to isolate its links.</span></div>'
             + "".join(f'<div class="depgraph" id="graph-{key.replace("_", "-")}">{graphs.get(key) or ""}</div>'
                       for key in ('custom', 'all', 'custom_dup', 'all_dup')) +
-            '<div class="legend"><span>Coverage 0%<span class="grad"></span>100%</span>'
-            '<span><i style="background:#fcfcfb;border-style:dashed"></i>not measured</span>'
+            '<div class="legend"><span><span id="colorname">Coverage</span> 0%<span class="grad"></span>100%</span>'
+            '<span><i style="background:#fcfcfb;border-style:dashed"></i><span id="colornone">not measured</span></span>'
             '<span><i style="background:#fcfcfb;border:3px solid #d03b3b"></i>✖ not installable</span>'
             '<span><i class="dot">!</i>failing tests</span>'
             '<span><i style="background:#f0efec;border-radius:2px;border-color:#c3c2b7"></i>standard module</span>'
@@ -1074,8 +1092,11 @@ def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Option
     """`runs`: the commits recorded by jsa backfill in the branch of the code, `events` those of backfill.toml."""
     measured = lambda e: isinstance(e.get('coverage'), int) and e['coverage'] >= 0
     enterprise = report.enterprise_dependencies(state)
+    mutation = meta.get('mutation') or {}
+    score = lambda name: mutation_score_all(mutation[name]) if name in mutation else None
     data = {'addons': {name: {'status': report.status(e), 'color': coverage_color(e['coverage']) if measured(e) else None,
-                              'tip': _tip(e)} for name, e in state.items()},
+                              'mutation': None if score(name) is None else coverage_color(score(name)),
+                              'tip': _tip(e, mutation.get(name))} for name, e in state.items()},
             'enterprise': sorted({module for e in state.values() for module in e.get('enterprise') or []}),
             'duplicates': graphs.get('duplicates', [])}
     when = meta['generated_at'][:16].replace('T', ' ')
@@ -1116,7 +1137,7 @@ def render(state: dict, summary: dict, old_summary: Optional[dict], diff: Option
         _security(state, reviewed, before, off),
         _mutation(meta.get('mutation') or {}, meta.get('reviewed_changes') or {}),
         _enterprise(enterprise, dict((diff or {}).get('enterprise_added', []))), _standard(meta.get('standard_tests')),
-        _table(state, enterprise, reviewed, meta.get('mutation'), diff, before), _graph(graphs),
+        _table(state, enterprise, reviewed, meta.get('mutation'), diff, before), _graph(graphs, bool(meta.get('mutation'))),
         '<footer>Files next to this report: <code>state.json</code> (last results, reused for unchanged addons), '
         '<code>runs/</code> (one file per commit recorded by <code>jsa backfill</code>: the trend), '
         '<code>coverage_odoo.log</code> (full Odoo log of the last measure).</footer>',
