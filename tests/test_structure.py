@@ -592,3 +592,29 @@ def test_the_graph_can_color_the_addons_by_their_mutation_score():
     assert '<select id="colorby">' in page and 'data-name="Mutation score (of all the changes)"' in page
     without = report_html.render(state, report.summarize(state), None, None, None, [], [], graphs, {"generated_at": "2026-01-01T10:00:00"})
     assert 'id="colorby"' not in without and '<span id="colorname">Coverage</span>' in without  # coverage only
+
+
+def test_without_a_profile_the_one_running_the_odoo_version_of_the_addons(tmp_path, monkeypatch, capsys):
+    for name, version in (("a", "19.0.1.0.0"), ("b", "19.0.2.0.0"), ("c", "17.0.1.0.0")):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "__manifest__.py").write_text(f"{{'name': '{name}', 'version': '{version}'}}")
+    versions = {"old": 17, "new": 19, "new_too": 19}
+    monkeypatch.setattr(config, "load_profile", lambda name, conf: {"name": name})
+    monkeypatch.setattr(odoo, "major_version", lambda profile: versions[profile["name"]])
+    conf = {"profiles": {"old": {}, "new": {}}}
+    assert codebase.profile_of_addons(conf, [tmp_path]) == "new"  # 19: the most common version of the manifests
+    assert "🔧 Profile 'new': it runs Odoo 19, the version of your addons (-p to choose another)" in capsys.readouterr().out
+    for profiles, why in (({"old": {}}, "no profile of config.toml runs Odoo 19, the version of your addons"),
+                          ({"new": {}, "new_too": {}}, "several profiles (new, new_too) run Odoo 19")):
+        with pytest.raises(typer.Exit):
+            codebase.profile_of_addons({"profiles": profiles}, [tmp_path])
+        assert f"❌ Which profile? {why}" in capsys.readouterr().out
+    # the command: -p always wins; without it, the profile of the addons' version
+    chosen = []
+    monkeypatch.setattr(config, "load_config", lambda: conf)
+    monkeypatch.setattr(config, "addons_roots", lambda conf: [tmp_path])
+    monkeypatch.setattr(codebase, "coverage_profile_of", lambda name, conf: chosen.append(name) or {})
+    monkeypatch.setattr(codebase, "analyse", lambda *args, **kwargs: None)
+    for profile in (None, "old"):
+        codebase.structure(coverage_enabled=True, profile=profile, standard_tests=False, measure_all=False, open_it=False)
+    assert chosen == ["new", "old"]

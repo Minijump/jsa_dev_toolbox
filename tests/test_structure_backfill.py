@@ -57,8 +57,8 @@ def test_mistakes_in_the_plan_are_refused(tmp_path, capsys, monkeypatch):
 def test_the_odoo_version_of_the_code_and_its_profile(monkeypatch):
     manifests = {"a": {"version": "17.0.1.0.0"}, "b": {"version": "17.0.2.1.0"}, "c": {"version": "19.0.1.0.0"},
                  "d": {"version": "1.0"}, "e": {}}
-    assert backfill.odoo_version(manifests) == 17  # the most common
-    assert backfill.odoo_version({"x": {"version": "1.2"}}) is None
+    assert backfill.odoo.written_for(manifests) == 17  # the most common
+    assert backfill.odoo.written_for({"x": {"version": "1.2"}}) is None
     conf = {"profiles": {"old": {}, "new": {}, "new_too": {}}}
     versions = {"old": 17, "new": 19, "new_too": 19}
     monkeypatch.setattr(backfill.config, "load_profile", lambda name, conf: {"name": name})

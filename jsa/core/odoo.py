@@ -351,6 +351,22 @@ def demo_arguments(profile: dict, demo: bool) -> list[str]:
     return [] if on_request else ["--without-demo=all"]
 
 
+MANIFEST_VERSION_RE = re.compile(r'^(\d+)\.0\.')  # '17.0.1.0.0': written for Odoo 17
+
+
+def written_for(manifests: dict[str, dict]) -> Optional[int]:
+    """The Odoo version addons are written for: the major of their manifests' version ('17.0.1.0.0'), the most common;
+    None when no manifest says it."""
+    found = Counter(int(m.group(1)) for m in (MANIFEST_VERSION_RE.match(str(manifest.get('version', '')))
+                                              for manifest in manifests.values()) if m)
+    return found.most_common(1)[0][0] if found else None
+
+
+def profiles_running(version: int, conf: dict) -> list[str]:
+    """The profiles of config.toml whose Odoo has this major version."""
+    return [name for name in conf.get('profiles', {}) if major_version(config.load_profile(name, conf)) == version]
+
+
 def major_version(profile: dict) -> Optional[int]:
     """Major version of the Odoo of a profile, from its odoo/release.py (version_info = (19, 0, ...)), None if unknown."""
     try:

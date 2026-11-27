@@ -199,7 +199,9 @@ def reusable(previous: dict, key: dict) -> bool:
 def structure(
     coverage_enabled: bool = typer.Option(False, "--coverage", "-c", help="Run the tests of the addons under coverage: "
                                           "each addon alone with its dependencies (per module), then all together (whole)"),
-    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile key from config.toml [profiles] (required with --coverage)"),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile key from config.toml [profiles] running "
+                                          "the tests with --coverage (by default: the only one running the Odoo version "
+                                          "of your addons)"),
     standard_tests: bool = typer.Option(False, "--standard-tests", help="With -c: also run the tests of the standard modules "
                                         "your addons need, with your addons installed, like odoo.sh (in the whole run; long)"),
     measure_all: bool = typer.Option(False, "--all", "-a", help="Measure every addon, even those unchanged since the last measure"),
@@ -225,9 +227,7 @@ def structure(
         raise typer.Exit(code=1)
     coverage_profile = None
     if coverage_enabled:
-        if not profile:
-            typer.echo("❌ --profile/-p is required when --coverage/-c is enabled.")
-            raise typer.Exit(code=1)
+        profile = profile or profile_of_addons(conf, roots)
         coverage_profile = coverage_profile_of(profile, conf)
     if standard_tests and not coverage_enabled:
         typer.echo("❌ --standard-tests needs --coverage/-c.")
@@ -263,6 +263,22 @@ def _tables_with(table: dict, key: str, path: str = "") -> list[str]:
         if isinstance(value, dict):
             found += _tables_with(value, key, f"{path}.{name}" if path else name)
     return found
+
+
+def profile_of_addons(conf: dict, roots: list[Path]) -> str:
+    """The profile measuring the addons when -p is not given (the user's request 2026-11-27, like jsa backfill): the
+    only one of config.toml whose Odoo has the version the addons' manifests are written for. Stops when there is
+    none or several."""
+    version = odoo.written_for(read_manifests(find_addons(roots), warn=False))
+    found = odoo.profiles_running(version, conf) if version else []
+    if len(found) != 1:
+        why = ('no manifest of your addons says for which Odoo version it is written (version = "19.0.1.0.0")'
+               if version is None else f"several profiles ({', '.join(found)}) run Odoo {version}, the version of "
+               f"your addons" if found else f"no profile of config.toml runs Odoo {version}, the version of your addons")
+        typer.echo(f"❌ Which profile? {why}: give one with -p <profile>")
+        raise typer.Exit(code=1)
+    typer.echo(f"🔧 Profile '{found[0]}': it runs Odoo {version}, the version of your addons (-p to choose another)")
+    return found[0]
 
 
 def coverage_profile_of(name: str, conf: dict) -> dict:

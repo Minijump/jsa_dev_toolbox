@@ -292,8 +292,11 @@ measures, it is recorded with the commits (`jsa backfill`), which adds it to the
 `event = "Release 2.0"` on a commit, or `[[events]]` with a `date` and an `event`. It is drawn as a dashed vertical
 line on every chart, once commits were recorded before and after it.
 
-**Measuring the coverage.** `jsa structure -c -p <profile>` installs the addons in temporary databases (dropped
-afterwards), runs their tests under `coverage`, and puts the results in the report. Two measures, both every time:
+**Measuring the coverage.** `jsa structure -c` installs the addons in temporary databases (dropped afterwards), runs
+their tests under `coverage`, and puts the results in the report. The profile is the only one of `config.toml` running
+the Odoo version your addons are written for (the most common major of their manifests' `version`, `19.0.x.y.z` -> 19);
+with several (or none) for that version, give one with `-p <profile>`, which always wins. Two measures, both every
+time:
 
 | Measure | What it does | Catches |
 |---|---|---|

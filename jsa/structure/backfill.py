@@ -20,12 +20,10 @@ install, no test); so is the security review on the commits recorded before jsa 
 Requires all the addons_roots of config.toml in one git repository.
 """
 import os
-import re
 import shutil
 import subprocess
 import tempfile
 import time
-from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -41,7 +39,6 @@ from .bisect import in_worktree
 
 PLAN_NAME = "backfill.toml"
 KEYS = {'commits': ('commit', 'event'), 'events': ('date', 'event')}
-VERSION_RE = re.compile(r'^(\d+)\.0\.')
 
 
 def stop(message: str):
@@ -108,13 +105,6 @@ def read_plan(path: Optional[Path] = None) -> dict:
 
 # ---------- which Odoo, which profile ----------
 
-def odoo_version(manifests: dict[str, dict]) -> Optional[int]:
-    """The Odoo version the addons are written for: the major of their versions ('17.0.1.0.0'), the most common."""
-    found = Counter(int(m.group(1)) for m in (VERSION_RE.match(str(manifest.get('version', '')))
-                                              for manifest in manifests.values()) if m)
-    return found.most_common(1)[0][0] if found else None
-
-
 def profile_for(version: Optional[int], chosen: dict[str, str], conf: dict) -> str:
     """The profile of config.toml that runs this Odoo version: the one given in [profiles] of backfill.toml, else
     the only profile whose Odoo has this version. ValueError: why there is none."""
@@ -124,8 +114,7 @@ def profile_for(version: Optional[int], chosen: dict[str, str], conf: dict) -> s
         if chosen[str(version)] not in conf.get('profiles', {}):
             raise ValueError(f"[profiles] of backfill.toml: no profile '{chosen[str(version)]}' in config.toml")
         return chosen[str(version)]
-    matching = [name for name in conf.get('profiles', {})
-                if odoo.major_version(config.load_profile(name, conf)) == version]
+    matching = odoo.profiles_running(version, conf)
     if len(matching) != 1:
         which = f"several profiles ({', '.join(matching)})" if matching else "no profile"
         raise ValueError(f"{which} of config.toml run Odoo {version}: say which one in backfill.toml, "
@@ -249,7 +238,7 @@ def backfill(dry_run: bool = typer.Option(False, "--dry-run", help="Show the com
         for item, sha in commits:  # all of them first: a missing profile stops before hours of measures
             checkout(tree, sha)
             found = find_addons(in_tree)
-            version = odoo_version(read_manifests(found, warn=False))
+            version = odoo.written_for(read_manifests(found, warn=False))
             try:
                 profile = profile_for(version, plan['profiles'], conf)
             except ValueError as e:
