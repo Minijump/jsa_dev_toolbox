@@ -112,6 +112,77 @@ def test_without_a_mutant_on_the_copy_behaves_like_the_original(monkeypatch):
     assert all(changed), [m for m, c in zip(found, changed) if not c]
 
 
+class Records(list):  # a recordset, enough for the functions of RETURNS
+    def filtered(self, keep):
+        return Records(r for r in self if keep(r))
+
+    def mapped(self, name):
+        return [r[name] for r in self]
+
+
+RETURNS = '''import re
+
+
+def actives(lines):
+    return lines.filtered(lambda l: l["active"])
+
+
+def total(lines):
+    return sum(lines.mapped("price"))
+
+
+def count(lines):
+    return len(lines)
+
+
+def names(lines):
+    return [l["name"] for l in lines if l["price"]]
+
+
+def label(line):
+    return line["name"] if line["active"] else "-"
+
+
+def kept(lines):
+    x = sum(lines.mapped("price"))  # a local variable: its kind is unknown when returned
+    return x
+
+
+def unsure(lines, start):
+    found = re.search("a", "abc")
+    return sum(lines, start), re.search("a", "abc"), found
+'''
+
+
+def test_a_returned_value_is_emptied_when_its_kind_is_sure_and_every_condition_negated(monkeypatch):
+    text, found = mutate(RETURNS)
+    changes = [(m["function"], m["op"], m["original"], m["mutated"]) for m in found]
+    assert changes == [
+        ("actives", "empty return", "lines.filtered(lambda l: l['active'])", "lines.filtered(lambda l: l['active'])[:0]"),
+        ("total", "empty return", "sum(lines.mapped('price'))", "0"),
+        ("count", "empty return", "len(lines)", "0"),
+        ("names", "negate condition", "l['price']", "not l['price']"),  # the if of a comprehension
+        ("names", "empty return", "[l['name'] for l in lines if l['price']]", "[]"),
+        ("label", "negate condition", "line['active']", "not line['active']")]  # a if c else b
+    # nothing for kept, unsure: a local variable, sum with a start (maybe not a number), re.search (a match)
+    switch = types.SimpleNamespace(active=0)
+    switch.m = lambda k: switch.active == k
+    monkeypatch.setitem(sys.modules, "jsa_mutant_switch", switch)
+    original, mutated = {}, {}
+    exec(RETURNS, original)
+    exec(text, mutated)
+    lines = Records([{"name": "a", "price": 2, "active": True}, {"name": "b", "price": 0, "active": False}])
+    calls = [(f, (lines,)) for f in ("actives", "total", "count", "names", "kept")] + [("label", (line,)) for line in lines]
+    result = lambda functions: [functions[f](*arguments) for f, arguments in calls]
+    assert result(mutated) == result(original)
+    for mutant in found:  # each one does something else, and never crashes
+        switch.active = mutant["index"]
+        assert result(mutated) != result(original), mutant
+    assert report_html._change_html(found[0]) == ("If <code>lines.filtered(lambda l: l[&#x27;active&#x27;])</code> is "
+                                                  "returned empty, no test fails.")
+    assert report_html._change_html(found[1]).endswith("is returned as 0, no test fails.")
+
+
 def test_a_mutant_keeps_its_id_when_lines_move_and_a_new_one_when_its_code_changes():
     _, before = mutate(MODEL)
     _, moved = mutate("# a comment\n\n" + MODEL)

@@ -706,6 +706,9 @@ def _change_html(mutant: dict) -> str:
     short = lambda text: E(text if len(text) <= 160 else text[:159] + "…")
     if mutant.get('op') in REMOVALS:
         return f"If <code>{short(mutant['original'])}</code> is removed, no test fails."
+    if mutant.get('op') == "empty return":  # mutants.emptied: no records, 0, []
+        return (f"If <code>{short(mutant['original'])}</code> is returned "
+                f"{'as 0' if mutant['mutated'] == '0' else 'empty'}, no test fails.")
     return f"If <code>{short(mutant['original'])}</code> becomes <code>{short(mutant['mutated'])}</code>, no test fails."
 
 

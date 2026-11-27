@@ -340,8 +340,9 @@ dashed line marks where the version changes. The `history.jsonl` of jsa 0.39 and
 
 **Mutation testing: what the tests run without checking it.** Coverage says which code the tests run, not whether they
 check what it does. `jsa mutation <addon>... -p <profile>` changes the code of an addon one small change at a time (a
-mutant: `>` becomes `<=`, `and` becomes `or`, a `not` is removed, `+` becomes `-`, a number changes, a call or an
-assignment to a field is removed, ...) and runs the tests that reach it. A change that no test notices is listed in the
+mutant: `>` becomes `<=`, `and` becomes `or`, a `not` is removed, a condition is negated (`if lines`), `+` becomes `-`,
+a number changes, a call or an assignment to a field is removed, records returned are returned empty, ...) and runs
+the tests that reach it. A change that no test notices is listed in the
 report: "If `move._post()` is removed, no test fails". Meant for your critical addons (`[mutation] addons` of
 `config.toml` when none is given); Linux only (WSL).
 - How long: Odoo is loaded once, then each mutant runs in a copy of it (fork), with only the tests that reach it, on
@@ -353,6 +354,10 @@ report: "If `move._post()` is removed, no test fails". Meant for your critical a
   `.get(k, 0.0)`, `return True` of a button, the number of a comparison) or that nobody tests (the action a method
   returns to the web client, chatter messages and activities, names taken from a sequence); the methods matching
   `[mutation] skip` (globs: `"action_view_*"`, `"SaleOrder._compute_display_name"`).
+- A value returned is emptied only when its kind is sure, so that the empty one is always valid: the records of
+  `browse`, `search`, `filtered`, `filtered_domain`, `sorted`, `mapped` (no records), `sum(x)` and `len(x)` (0), a
+  list comprehension (`[]`). Not `return res` or `return x.field`: what they hold is not known. A change not noticed
+  then says that no test looks at what the method returns.
 - No false alarm, as far as it can: the tests run twice first, and those failing or flaky are left out; a change
   that survives but whose code also runs while installing (values computed then, on the demo data) is checked again
   by a real install with that change. Browser tests (tours) are not run: what only they check shows as not noticed

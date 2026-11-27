@@ -11,8 +11,10 @@ no mutant active the copy behaves like the original. Only the bodies of function
 decorators and default values run once, when Odoo imports the module.
 
 Rules: a comparison becomes its opposite (> -> <=; never the boundary >=, often equivalent), and <-> or, a `not`
-removed, an `if` condition negated, + <-> -, * <-> /, += <-> -=, True <-> False, a number changed (0 -> 1, 1 -> 0,
-n -> n+1), a call statement removed, an assignment to a field or a key removed, continue / break removed.
+removed, a condition negated (of an `if`, of `a if c else b`, of a comprehension's `if`), + <-> -, * <-> /,
++= <-> -=, True <-> False, a number changed (0 -> 1, 1 -> 0, n -> n+1), a call statement removed, an assignment to a
+field or a key removed, continue / break removed, a value returned emptied when its kind is sure (`emptied`: records
+of browse/search/filtered/... -> none, sum(x) / len(x) -> 0, a list comprehension -> []).
 Left alone: the text (strings, f-strings, error messages, raise), _() and _lt(), logging, assert, ensure_one(),
 super() calls, flush / invalidate; the kinds of constants that gave equivalent mutants in the prototype (the id of
 an x2many command (0, 0, vals), the default of .get(k, 0.0), the first value of a local variable, `return True` of a
@@ -28,7 +30,7 @@ import shutil
 import sys
 from pathlib import Path
 
-RULES_VERSION = 1  # a change of what is mutated: the results of another version are not reused
+RULES_VERSION = 2  # a change of what is mutated: the results of another version are not reused
 SKIP_CALLS = {"_", "_lt", "print", "warn"}
 LOGGERS = {"_logger", "logger", "logging", "_log"}
 NO_DELETE = {"ensure_one", "super", "flush_model", "flush_recordset", "flush_all", "invalidate_recordset",
@@ -37,6 +39,7 @@ OPPOSITE = {ast.Lt: ast.GtE, ast.LtE: ast.Gt, ast.Gt: ast.LtE, ast.GtE: ast.Lt, 
             ast.In: ast.NotIn, ast.NotIn: ast.In, ast.Is: ast.IsNot, ast.IsNot: ast.Is}
 ARITHMETIC = {ast.Add: ast.Sub, ast.Sub: ast.Add, ast.Mult: ast.Div, ast.Div: ast.Mult}
 REMOVALS = ("remove call", "remove assignment", "remove continue/break")
+RECORDS = {"browse", "search", "search_fetch", "filtered", "filtered_domain", "sorted", "mapped"}  # give records
 
 
 def call_name(node):
@@ -108,6 +111,27 @@ def constants_left_alone(fn):
         elif isinstance(node, ast.Return) and public and isinstance(node.value, ast.Constant):
             skip.add(id(node.value))  # return True of a button: nobody reads it
     return skip
+
+
+def emptied(value):
+    """What a returned value becomes when emptied, only when its kind is sure (the empty value of that kind is then
+    always valid where the value was: no crash, a test noticing nothing means no test looks at what is returned);
+    None otherwise (`return res`, `return x.field`: its kind is unknown, emptying it could be a false alarm).
+    Records (Odoo's methods giving records: `[:0]` of a recordset is the empty one of the same model, of a list `[]`;
+    not when called on super() (left alone, like its calls) nor re.search, which gives a match), the builtins sum (one
+    argument: sum(x, start) may not be a number) and len -> 0, a list comprehension -> []."""
+    if isinstance(value, ast.ListComp):
+        return lambda n: ast.List(elts=[], ctx=ast.Load())
+    if not isinstance(value, ast.Call):
+        return None
+    func = value.func
+    if isinstance(func, ast.Name) and func.id in ("sum", "len") and len(value.args) == 1 and not value.keywords:
+        return lambda n: ast.Constant(0)
+    if isinstance(func, ast.Attribute) and func.attr in RECORDS and not (
+            isinstance(func.value, ast.Call) and call_name(func.value) == "super") and not (
+            isinstance(func.value, ast.Name) and func.value.id == "re"):
+        return lambda n: ast.Subscript(value=n, slice=ast.Slice(upper=ast.Constant(0)), ctx=ast.Load())
+    return None
 
 
 def guard(k):
@@ -213,16 +237,35 @@ class Mutator(ast.NodeTransformer):
             return self.expr(node, "number", lambda n: ast.Constant(type(value)(new)))
         return node
 
+    def condition(self, test):
+        """A condition: its comparisons, and/or, not have their own rules; anything else (`if lines`) is negated."""
+        if isinstance(test, (ast.Compare, ast.BoolOp, ast.UnaryOp)):
+            return self.visit(test)
+        return self.expr(test, "negate condition", lambda n: ast.UnaryOp(op=ast.Not(), operand=n))
+
+    def visit_IfExp(self, node):  # a if c else b
+        node.test = self.condition(node.test)
+        node.body, node.orelse = self.visit(node.body), self.visit(node.orelse)
+        return node
+
+    def visit_comprehension(self, node):  # [l for l in lines if l.active]: not the target
+        node.iter = self.visit(node.iter)
+        node.ifs = [self.condition(test) for test in node.ifs]
+        return node
+
     # ---- statements
     def visit_If(self, node):
         if all(quiet(s) for s in node.body) and not node.orelse:  # it only guards something of no interest
             return node
-        test = node.test
-        if isinstance(test, (ast.Compare, ast.BoolOp, ast.UnaryOp)):
-            node.test = self.visit(test)
-        else:
-            node.test = self.expr(test, "negate condition", lambda n: ast.UnaryOp(op=ast.Not(), operand=n))
+        node.test = self.condition(node.test)
         node.body, node.orelse = self.body(node.body), self.body(node.orelse)
+        return node
+
+    def visit_Return(self, node):
+        empty = emptied(node.value)
+        if empty is None:
+            return self.generic_visit(node)
+        node.value = self.expr(node.value, "empty return", empty)  # its inner parts keep their own mutants
         return node
 
     def visit_For(self, node):
