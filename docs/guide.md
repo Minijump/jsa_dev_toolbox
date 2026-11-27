@@ -368,7 +368,8 @@ report: "If `move._post()` is removed, no test fails". Meant for your critical a
   run that a test noticed: how well they check what they run) and of all its changes (those in code no test runs count
   as not noticed: what other tools call the mutation score); the changes not noticed, by function, those new since its
   previous `jsa mutation` first and tagged; both scores run after run. The table shows both too. "Not reached by any
-  test" is the coverage's job.
+  test" is the coverage's job. On top of the section: the formulas of the two scores, and, folded, "How the changes
+  are made": every rule (what becomes what, with an example) and what is left alone, taken from the code itself.
 
 ![Mutation testing](images/report_mutation.png)
 

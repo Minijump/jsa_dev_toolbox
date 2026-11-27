@@ -10,16 +10,7 @@ the same mutants (never random). In the copy, mutant k is active when jsa_mutant
 no mutant active the copy behaves like the original. Only the bodies of functions are changed: class bodies (fields),
 decorators and default values run once, when Odoo imports the module.
 
-Rules: a comparison becomes its opposite (> -> <=; never the boundary >=, often equivalent), and <-> or, a `not`
-removed, a condition negated (of an `if`, of `a if c else b`, of a comprehension's `if`), + <-> -, * <-> /,
-+= <-> -=, True <-> False, a number changed (0 -> 1, 1 -> 0, n -> n+1), a call statement removed, an assignment to a
-field or a key removed, continue / break removed, a value returned emptied when its kind is sure (`emptied`: records
-of browse/search/filtered/... -> none, sum(x) / len(x) -> 0, a list comprehension -> []).
-Left alone: the text (strings, f-strings, error messages, raise), _() and _lt(), logging, assert, ensure_one(),
-super() calls, flush / invalidate; the kinds of constants that gave equivalent mutants in the prototype (the id of
-an x2many command (0, 0, vals), the default of .get(k, 0.0), the first value of a local variable, `return True` of a
-button, the number of a comparison); what is of no interest (the dict a method returns to the web client, chatter
-messages and activities, names taken from a sequence, and an `if` guarding only those); the methods matching `skip`.
+The rules and what is left alone: RULES and LEFT_ALONE below (the report shows them).
 """
 import ast
 import copy
@@ -31,6 +22,36 @@ import sys
 from pathlib import Path
 
 RULES_VERSION = 2  # a change of what is mutated: the results of another version are not reused
+# What each rule changes, as the report shows it (report_html._mutation; `code` between backticks): (the rule = the
+# `op` of its mutants, what it changes, an example). A unit test checks it names every rule of the Mutator below.
+RULES = (
+    ("comparison", "A comparison becomes its opposite: `<` and `>=`, `<=` and `>`, `==` and `!=`, `in` and `not in`, "
+                   "`is` and `is not`. Never the boundary (`>` to `>=`): often a change that cannot matter.",
+     "`qty > 10` → `qty <= 10`"),
+    ("and/or", "`and` and `or` are swapped.", "`paid and done` → `paid or done`"),
+    ("remove not", "A `not` is removed.", "`not done` → `done`"),
+    ("negate condition", "A condition that is not a comparison, an and/or nor a `not` is negated: of an `if`, of "
+                         "`a if c else b`, of the `if` of a comprehension.", "`if lines:` → `if not lines:`"),
+    ("arithmetic", "`+` and `-`, `*` and `/` are swapped, so are `+=` and `-=`, `*=` and `/=` (not when a side is "
+                   "text, a list or a tuple).", "`qty * price` → `qty / price`"),
+    ("boolean", "`True` and `False` are swapped.", "`True` → `False`"),
+    ("number", "A number changes: 0 becomes 1, 1 becomes 0, any other becomes itself + 1.", "`0.9` → `1.9`"),
+    ("remove call", "A call alone on its line is removed.", "`order.action_confirm()` → removed"),
+    ("remove assignment", "An assignment to a field or a key is removed.", "`self.note = text` → removed"),
+    ("remove continue/break", "A `continue` or a `break` is removed.", "`continue` → removed"),
+    ("empty return", "A value returned is emptied, only when its kind is sure (so the empty one is always valid): the "
+                     "records of `browse`, `search`, `filtered`, `filtered_domain`, `sorted`, `mapped` → none, "
+                     "`sum(x)` and `len(x)` → 0, a list comprehension → `[]`. Not `return res`: its kind is unknown.",
+     "`return self.browse(ids)` → `return self.browse(ids)[:0]`"),
+)
+LEFT_ALONE = (
+    "Only the code inside functions is changed (not the fields, decorators, default values), not the tests, "
+    "migrations, hooks, manifests nor `__init__.py`. Never changed: text (strings, f-strings), `raise` and its message, "
+    "logging, `_()`, `assert`, `ensure_one()`, `super()` calls, flush and invalidate. Left alone because changing them "
+    "cannot matter: the id of `(0, 0, vals)`, the default of `.get(k, 0.0)`, the first value of a local variable, "
+    "`return True` of a public method, the number in a comparison. Left alone because nobody tests them: the action a "
+    "method returns to the web client, chatter messages and activities, names taken from a sequence, an `if` guarding "
+    "only those. And the methods matching `[mutation] skip` of config.toml.")
 SKIP_CALLS = {"_", "_lt", "print", "warn"}
 LOGGERS = {"_logger", "logger", "logging", "_log"}
 NO_DELETE = {"ensure_one", "super", "flush_model", "flush_recordset", "flush_all", "invalidate_recordset",

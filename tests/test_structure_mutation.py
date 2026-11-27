@@ -1,3 +1,5 @@
+import ast
+import inspect
 import json
 import sys
 import types
@@ -265,6 +267,20 @@ def test_the_report_lists_the_changes_no_test_notices(tmp_path):
     entry = report_html.mutation_entry("my_addon", RESULT["mutants"][0])
     assert entry.startswith('[[mutation]]\nid = "aaaaaaaaaa"  # my_addon/models/sale.py:21 | Sale.compute | remove call\n')
     assert 'data-key="mutation"' in page and 'data-mutation="33"' in page and 'data-mutation="-1"' in page
+    # the two scores with their formula, how the changes are made folded (not what mutation testing is)
+    assert "<li><strong>of all the changes</strong> = noticed ÷ (noticed + not noticed + not reached)</li>" in section
+    assert '<details class="how"><summary>How the changes are made</summary>' in section and "changes the code" not in section
+    assert "<td>comparison</td>" in section and "<code>qty &gt; 10</code> → <code>qty &lt;= 10</code>" in section
+    # Coverage, Mutation, Tests next to each other: as narrow as their content, Mutation not aligned right
+    assert ('<th data-key="coverage" class="tight">Coverage</th><th data-key="mutation" class="tight">Mutation</th>'
+            '<th data-key="tests" class="tight">Tests</th>') in page
+
+
+def test_the_report_names_every_rule_of_the_mutator():
+    tree = ast.parse(inspect.getsource(mutants.Mutator))
+    made = {call.args[1].value for call in ast.walk(tree) if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute) and call.func.attr in ("expr", "stmt") and len(call.args) > 1}
+    assert made == {name for name, _, _ in mutants.RULES}
 
 
 def test_reviewed_changes_in_their_own_section(tmp_path, capsys):

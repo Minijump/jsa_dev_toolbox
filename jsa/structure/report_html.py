@@ -7,12 +7,13 @@ Coverage is a continuous color from red (0%) to green (100%). States use a symbo
 """
 import json
 import math
+import re
 from collections import Counter
 from datetime import datetime
 from html import escape as E
 from typing import Optional
 
-from . import report, security
+from . import mutants, report, security
 from .coverage import NO_REPORT, NOT_INSTALLABLE
 
 # status: (label, symbol, css class)
@@ -133,6 +134,10 @@ details.rule>summary:hover .rname{color:var(--accent)}
 details.rule>p{color:var(--ink2);margin:4px 0 6px 22px;max-width:900px}details.rule>ul.findings{margin-left:22px}
 details.reviewed{margin:0 0 10px 22px}details.reviewed>summary{cursor:pointer}
 details.rule.mutated>summary{grid-template-columns:10px minmax(180px,320px) 340px 1fr}.mbody{margin-left:22px}
+.scores{color:var(--ink2);margin:0 0 6px}.scores p{margin:0 0 4px}.scores ul{margin:0 0 6px;padding-left:22px}
+details.how{margin:0 0 12px}details.how>summary{cursor:pointer;color:var(--ink2)}
+details.how table{margin:8px 0}details.how td{vertical-align:top}details.how td:first-child{white-space:nowrap}details.how>p{color:var(--ink2);margin:4px 0 0}
+th.tight,td.tight{width:1%;white-space:nowrap}
 details.part{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:0 18px;margin-bottom:16px}
 details.part>summary{display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;padding:14px 0;cursor:pointer;list-style:none}
 details.part>summary::-webkit-details-marker{display:none}
@@ -574,8 +579,9 @@ def _table(state: dict, enterprise: dict, reviewed: Optional[dict] = None, mutat
     scores = {name: (mutation_score(result), mutation_score_all(result)) for name, result in (mutation or {}).items()}
     coverage_change = {name: change for name, _, change, *_ in diff.get('metrics_changed', []) if change}
     newly = {name: len(tests) for name, tests in diff.get('newly_failing', [])}
-    columns = ([("name", "Addon", ""), ("coverage", "Coverage", "")] + ([("mutation", "Mutation", "num")] if mutation else [])
-               + [("tests", "Tests", ""), ("loc", "Lines of code", "num"), ("ent", "Enterprise", "num"),
+    columns = ([("name", "Addon", ""), ("coverage", "Coverage", "tight")]
+               + ([("mutation", "Mutation", "tight")] if mutation else [])
+               + [("tests", "Tests", "tight"), ("loc", "Lines of code", "num"), ("ent", "Enterprise", "num"),
                   ("security", "Security", "num")])
     head = "".join(f'<th data-key="{key}" class="{css}">{label}</th>' for key, label, css in columns)
     bodies = []
@@ -585,7 +591,7 @@ def _table(state: dict, enterprise: dict, reviewed: Optional[dict] = None, mutat
         failed = len(entry.get('failed') or [])
         ent = enterprise.get(name, {})
         reached, everything = scores.get(name, (None, None))
-        mutation_cell = (f'<td class="num" title="Changes of its code noticed by the tests (jsa mutation): of those its '
+        mutation_cell = (f'<td class="tight" title="Changes of its code noticed by the tests (jsa mutation): of those its '
                          f'tests reach, and of all">{"" if reached is None else f"{reached}%"}'
                          + (f'<span class="whole">{everything}% of all</span>' if everything is not None else "")
                          + '</td>') if mutation else ""
@@ -596,8 +602,8 @@ def _table(state: dict, enterprise: dict, reviewed: Optional[dict] = None, mutat
             f'<tbody class="addon" data-name="{E(name.lower())}" data-status="{state_name}" data-coverage="{coverage}" '
             f'data-mutation="{-1 if reached is None else reached}" data-tests="{STATUS_RANK[state_name] * 10000 - failed}" '
             f'data-loc="{entry.get("loc", 0)}" data-ent="{len(ent)}" data-security="{to_review[name]}">'
-            f'<tr><td class="name">{new_tag}{E(name)}</td><td>{_coverage_html(entry, coverage_change.get(name))}</td>'
-            f'{mutation_cell}<td>{_tests_html(entry, newly.get(name, 0))}</td><td class="num">{entry.get("loc", 0):,}</td>'
+            f'<tr><td class="name">{new_tag}{E(name)}</td><td class="tight">{_coverage_html(entry, coverage_change.get(name))}</td>'
+            f'{mutation_cell}<td class="tight">{_tests_html(entry, newly.get(name, 0))}</td><td class="num">{entry.get("loc", 0):,}</td>'
             f'<td class="num" title="{E(", ".join(ent))}">{len(ent) or ""}</td>'
             f'<td class="num" title="Security findings to review">{security_cell}</td></tr>'
             f'<tr class="detail"><td colspan="{len(columns)}">{_detail(name, entry, state, used_by[name], ent)}</td></tr></tbody>')
@@ -676,7 +682,7 @@ def _security(state: dict, reviewed: dict, before: Optional[dict], off=()) -> st
                  + (f" ({change})" if change else "") + (f" · {total_done} reviewed" if total_done else ""), body)
 
 
-REMOVALS = ("remove call", "remove assignment", "remove continue/break")  # mutants.REMOVALS
+REMOVALS = mutants.REMOVALS
 
 
 def mutation_counts(result: dict) -> dict:
@@ -780,13 +786,31 @@ def _mutation(results: dict, reviewed: dict) -> str:
                      f'<div class="mbody">{body}</div></details>')
     summary = ((f"{total} change(s) no test notices" if total else "every change the tests reach is noticed")
                + (f' (<span class="neg">+{total_new} new</span>)' if total_new else "") + f" · {len(results)} addon(s)")
-    intro = ('<p class="meta" style="margin:0 0 10px"><code>jsa mutation</code> changes the code of an addon one small '
-             'change at a time (<code>&gt;</code> becomes <code>&lt;=</code>, a call is removed, ...) and runs the tests '
-             'that reach it: a change no test notices is behaviour the tests run without checking it. Two scores: of '
-             'the changes the tests reach (how well they check what they run), and of all the changes (those in code no '
-             'test runs count as not noticed: what other tools call the mutation score). When a change cannot matter, '
-             'copy its lines into <code>reviewed.toml</code> and say why in <code>reason</code>.</p>')
-    return _part('mutation', 'Mutation testing: untested behaviour', summary, intro + "".join(folds))
+    return _part('mutation', 'Mutation testing: untested behaviour', summary,
+                 MUTATION_SCORES + _how_mutants() + "".join(folds))
+
+
+# the two scores of an addon (the user, 2026-11-27: their formulas, not what mutation testing is)
+MUTATION_SCORES = (
+    '<div class="scores"><p>Each change of an addon\'s code is <strong>noticed</strong> (a test fails, or the code '
+    'crashes or hangs), <strong>not noticed</strong> (its tests pass) or <strong>not reached</strong> (no test runs that '
+    'code). A reviewed change still counts as not noticed.</p><ul>'
+    '<li><strong>of the changes reached</strong> = noticed ÷ (noticed + not noticed)</li>'
+    '<li><strong>of all the changes</strong> = noticed ÷ (noticed + not noticed + not reached)</li></ul></div>')
+
+
+def _code_spans(text: str) -> str:
+    """Text whose `code` is between backticks, as HTML."""
+    return re.sub(r"`([^`]+)`", r"<code>\1</code>", E(text))
+
+
+def _how_mutants() -> str:
+    """How the changes are made, folded: the rules of mutants.py (what becomes what), then what is left alone."""
+    rows = "".join(f'<tr><td>{E(name)}</td><td>{_code_spans(what)}</td><td>{_code_spans(example)}</td></tr>'
+                   for name, what, example in mutants.RULES)
+    return ('<details class="how"><summary>How the changes are made</summary><table class="plain">'
+            '<thead><tr><th>Rule</th><th>What changes</th><th>Example</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table><p>{_code_spans(mutants.LEFT_ALONE)}</p></details>')
 
 
 def _seconds(seconds: float) -> str:
