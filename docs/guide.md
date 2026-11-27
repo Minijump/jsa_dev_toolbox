@@ -342,7 +342,7 @@ commit is on the same charts, every Odoo version on the same curve, so the cover
 dashed line marks where the version changes. The `history.jsonl` of jsa 0.39 and older is no longer read.
 
 **Mutation testing: what the tests run without checking it.** Coverage says which code the tests run, not whether they
-check what it does. `jsa mutation <addon>... -p <profile>` changes the code of an addon one small change at a time (a
+check what it does. `jsa mutation <addon>...` (the profile chosen like `jsa structure -c`, or `-p <profile>`) changes the code of an addon one small change at a time (a
 mutant: `>` becomes `<=`, `and` becomes `or`, a `not` is removed, a condition is negated (`if lines`), `+` becomes `-`,
 a number changes, a call or an assignment to a field is removed, records returned are returned empty, ...) and runs
 the tests that reach it. A change that no test notices is listed in the

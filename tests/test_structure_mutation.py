@@ -307,6 +307,23 @@ def test_mutation_needs_linux_and_addons(monkeypatch, capsys):
     assert "Which addons?" in capsys.readouterr().out
 
 
+def test_mutation_without_a_profile_takes_the_one_of_the_addons_version(tmp_path, monkeypatch):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "__manifest__.py").write_text("{'name': 'a', 'version': '19.0.1.0.0'}")
+    monkeypatch.setattr(mutation.sys, "platform", "linux")
+    monkeypatch.setattr(config, "load_config", lambda required=True: {"profiles": {"17": {}, "19": {}}})
+    monkeypatch.setattr(config, "addons_roots", lambda conf: [tmp_path])
+    monkeypatch.setattr(mutation.odoo, "major_version", lambda profile: int(profile["name"]))
+    chosen = []
+    monkeypatch.setattr(config, "load_profile", lambda name, conf: chosen.append(name) or {"name": name})
+    monkeypatch.setattr(mutation, "standard_depends", lambda profile: (_ for _ in ()).throw(typer.Exit(code=3)))  # stop
+    for profile in (None, "17"):
+        chosen.clear()
+        with pytest.raises(typer.Exit):
+            mutation.mutation(["a"], profile, 0, False)
+        assert chosen[-1] == (profile or "19")  # -p always wins; without it, the profile of the addons' version
+
+
 def test_a_change_no_test_notices_anymore_is_new():
     previous = {"mutants": [{"id": "a", "status": "survived"}, {"id": "b", "status": "killed"}]}
     mutants = [{"id": "a", "status": "survived"}, {"id": "b", "status": "survived"}, {"id": "c", "status": "killed"}]

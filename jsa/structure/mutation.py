@@ -275,7 +275,8 @@ def check_again(name, survivors, every_test, mutated, deps_db, data_dir, log, de
 def mutation(
     names: Optional[list[str]] = typer.Argument(None, metavar="[ADDON]...", help="The addons to measure (default: "
                                                 "\\[mutation] addons of config.toml)"),  # \\[: not markup
-    profile: str = typer.Option(..., "--profile", "-p", help="Profile key from config.toml \\[profiles]"),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile key from config.toml \\[profiles] "
+                                          "(by default: the only one running the Odoo version of your addons)"),
     workers: int = typer.Option(0, "--workers", "-w", help="Tests run in parallel (default: half the processors, 4 at "
                                 "most); each one is an Odoo with its own database"),
     measure_all: bool = typer.Option(False, "--all", "-a", help="Measure again the addons that did not change"),
@@ -299,6 +300,7 @@ def mutation(
     if unknown:
         typer.echo(f"❌ Not a custom addon of [codebase] addons_roots: {', '.join(unknown)}")
         raise typer.Exit(code=1)
+    profile = profile or codebase.profile_of_addons(conf, roots)
     odoo_profile = config.load_profile(profile, conf)
     graph = DependencyGraph({**standard_depends(odoo_profile), **{n: m.get('depends', []) for n, m in manifests.items()}},
                             custom=addons)
