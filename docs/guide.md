@@ -197,7 +197,8 @@ it holds and what changed: a click opens one), then the table of the addons and 
   dependencies, your own measures), each titled with its last value. Coverage, failed tests and addons not
   installable have two lines: per module, and whole (dashed). Each chart is zoomed on its values (coverage going from
   80% to 82% shows); its button "Axis from 0" draws it from 0 instead. Each point is a commit recorded with
-  `jsa backfill` (below), placed at its date; only the commits of your current branch are drawn (the others are
+  `jsa backfill` (below), placed at its date: the x axis is at scale, a month without a recorded commit is a
+  gap, a few dates are written along it; only the commits of your current branch are drawn (the others are
   counted in the summary). Under the title, in small: the branch, the commit and its date of the code measured.
 
 **The history: recording commits.** The trend draws the commits recorded with `jsa backfill`, and only them:

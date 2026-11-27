@@ -557,3 +557,18 @@ def test_the_table_says_the_tests_in_one_column():
     assert '<span class="tag">new</span>none' in table and "◆" not in table
     ranks = [int(part.split('"')[1]) for part in table.split('data-tests=')[1:]]
     assert ranks == sorted(ranks)  # not installable, failing (most failures first), no tests, passing
+
+
+def test_the_x_axis_is_at_scale():
+    runs = [_run(1, 60.0, 12000), _run(2, 61.0, 12100), _run(11, 62.0, 12200)]  # one day apart, then nine
+    page = report_html._trend(runs, [{"date": "2026-10-06T10:00:00", "event": "Release 2.0"}])
+    loc = page[page.index('data-chart="loc"'):page.index('data-chart="tests"')]
+    xs = [float(p.split(",")[0]) for p in loc.split('<polyline points="')[1].split('"')[0].split()]
+    assert xs == [48.0, 156.0, 1128.0]  # 1 day of 10 = 108 px of 1080: each commit at its date
+    event = float(loc.split('<g class="event">')[1].split('x1="')[1].split('"')[0])
+    assert event == 588.0  # the 6th: half way between the 1st and the 11th
+    assert '<text class="date" x="318.0"' in loc and ">2026-10-03<" in loc  # dates written along the axis
+    same = report_html._trend([_run(1, 60.0, 12000), _run(1, 61.0, 12100)])  # the same date: one step per commit
+    assert '<polyline points="48.0,' in same and "1128.0," in same and 'class="date"' not in same
+    near = report_html._trend([_run(1, 60.0, 12000), _run(3, 61.0, 12100)])  # 2 days: no date between them
+    assert 'class="date"' not in near and '<polyline points="48.0,' in near

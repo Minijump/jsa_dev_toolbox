@@ -830,7 +830,8 @@ LINES = ("per module", "whole")  # the two lines of a chart measured both ways
 
 
 def line_chart(title: str, points: list[tuple], unit: str = "", y_max: Optional[float] = None,
-               zoom: bool = False, events: list[tuple[float, str]] = (), css: str = "", names: tuple = ()) -> str:
+               zoom: bool = False, events: list[tuple[float, str]] = (), css: str = "", names: tuple = (),
+               xs: Optional[list[float]] = None, dates: list[tuple[float, str]] = ()) -> str:
     """Line chart of a measure over the runs (the section around it names it). points: (label, value[, tooltip]).
     With `names`, several lines: the value of a point is then a tuple, one value per line (None: that run did not
     measure it, the line goes straight to its next point); the second line is dashed (the legend is the section's).
@@ -838,7 +839,8 @@ def line_chart(title: str, points: list[tuple], unit: str = "", y_max: Optional[
     value of each line is labeled. zoom: the axis covers the values instead of starting at 0 (+2% on 80,000 lines of
     code would look flat). events: (position on the x axis, counted in runs; what happened), drawn as dashed vertical
     lines. As wide as the page's sections (1200 = their width on a large screen: the text keeps its size there).
-    css: more classes of the <svg>."""
+    css: more classes of the <svg>. xs: where each point is, counted in runs like the events (at scale: its date; by
+    default one step per point); dates: (position, label) written on the x axis between the first and the last."""
     width, height, left, right, top, bottom = 1200, 200, 48, 72, 26, 24
     lines = [[p[1][n] for p in points] for n in range(len(names))] if names else [[p[1] for p in points]]
     values = [v for line in lines for v in line if v is not None]
@@ -848,7 +850,8 @@ def line_chart(title: str, points: list[tuple], unit: str = "", y_max: Optional[
     else:
         low, high = 0, y_max or max(1, *values)
         ticks = [0, high / 2, high] if unit or high % 2 == 0 else [0, high]  # no half tick for counts
-    x = lambda i: left + i * (width - left - right) / max(len(points) - 1, 1)
+    at = lambda position: left + position * (width - left - right) / max(len(points) - 1, 1)
+    x = lambda i: at(xs[i] if xs else i)
     y = lambda v: top + (1 - (v - low) / (high - low)) * (height - top - bottom)
     out = [f'<svg class="chart{" " + css if css else ""}" viewBox="0 0 {width} {height}" width="{width}" role="img" '
            f'aria-label="{E(title)}">']
@@ -856,12 +859,14 @@ def line_chart(title: str, points: list[tuple], unit: str = "", y_max: Optional[
         css = "axisline" if tick == ticks[0] else "gridline"
         out.append(f'<line class="{css}" x1="{left}" x2="{width - right}" y1="{y(tick):.1f}" y2="{y(tick):.1f}"/>'
                    f'<text x="{left - 6}" y="{y(tick) + 4:.1f}" text-anchor="end">{axis_number(tick)}{unit}</text>')
+    for position, label in dates:
+        out.append(f'<text class="date" x="{at(position):.1f}" y="{height - 6}" text-anchor="middle">{E(label)}</text>')
     for position, text in events:
         if 0 <= position <= len(points) - 1:
-            at, near_end = x(position), x(position) > left + 0.7 * (width - left - right)
+            here, near_end = at(position), at(position) > left + 0.7 * (width - left - right)
             short = text if len(text) <= 40 else text[:39] + "…"
-            out.append(f'<g class="event"><title>{E(text)}</title><line x1="{at:.1f}" x2="{at:.1f}" y1="{top - 6}" '
-                       f'y2="{height - bottom}"/><text x="{at + (-5 if near_end else 5):.1f}" y="{top - 9}" '
+            out.append(f'<g class="event"><title>{E(text)}</title><line x1="{here:.1f}" x2="{here:.1f}" y1="{top - 6}" '
+                       f'y2="{height - bottom}"/><text x="{here + (-5 if near_end else 5):.1f}" y="{top - 9}" '
                        f'text-anchor="{"end" if near_end else "start"}">{E(short)}</text></g>')
     lasts = []  # (line, x, y, text) of the last value of each line
     for n, line in enumerate(lines):
@@ -954,9 +959,21 @@ def _trend_section(key: str, title: str, unit: str, is_open: bool, runs: list[di
         f" (measured {str(r['date'])[:10]})" if r.get('code_date') and r.get('date') and str(r['code_date'])[:10] != str(r['date'])[:10] else "") + (
         f" · {detail(r)}" if detail and detail(r) else "")
     dates = [code_date(r) for r, _ in points]
-    marks = event_positions(dates, list(events) + version_changes([r for r, _ in points])) if all(dates) else []
+    happened = list(events) + version_changes([r for r, _ in points])
+    span = (dates[-1] - dates[0]).total_seconds() if all(dates) else 0
+    if span:  # at scale (the user, 2026-11-27): each commit at its date, counted in runs like the events
+        place = lambda when: (when - dates[0]).total_seconds() / span * (len(points) - 1)
+        xs = [place(when) for when in dates]
+        marks = [(place(when), str(e['event'])) for e in happened
+                 if (when := report.parse_date(e['date'])) and dates[0] <= when <= dates[-1]]
+        quarters = [dates[0] + (dates[-1] - dates[0]) * k / 4 for k in (1, 2, 3)]
+        # written when 4 days or more apart: a day between each, no date twice nor the one of the first or last point
+        ticks = [(place(when), when.strftime('%Y-%m-%d')) for when in quarters] if span >= 4 * 86400 else []
+    else:  # no dates, or all the same: one step per commit
+        xs, ticks = None, []
+        marks = event_positions(dates, happened) if all(dates) else []
     chart = lambda zoom: line_chart(title, [(label(r), v, tip(r)) for r, v in points], unit, 100 if unit == "%" else None,
-                                    zoom, marks, "zoomed" if zoom else "full", names)
+                                    zoom, marks, "zoomed" if zoom else "full", names, xs, ticks)
     legend = ('<span class="lines">' + "".join(f'<span><i{f" class={chr(34)}l{n}{chr(34)}" if n else ""}></i>{E(name)}</span>'
                                                for n, name in enumerate(names)) + '</span>') if names else ""
     return (head + f'</summary><div class="axisbar">{legend}<button type="button" class="axis" title="The axis of this chart '
